@@ -447,6 +447,15 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 		} else {
 			break
 		}
+	case types.RelayFormatOpenAIResponses:
+		responsesResp, _, err := service.ChatCompletionsResponseToResponsesResponse(&simpleResponse, helper.GetResponseID(c))
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+		responseBody, err = common.Marshal(responsesResp)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
 	case types.RelayFormatClaude:
 		claudeResp := service.ResponseOpenAI2Claude(&simpleResponse, info)
 		claudeRespStr, err := common.Marshal(claudeResp)

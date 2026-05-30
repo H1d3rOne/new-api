@@ -80,7 +80,12 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	} else {
 		convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *request)
 		if err != nil {
-			return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			usage, fallbackErr := responsesViaChatCompletions(c, info, adaptor, request)
+			if fallbackErr != nil {
+				return fallbackErr
+			}
+			postResponsesUsage(c, info, usage)
+			return nil
 		}
 		relaycommon.AppendRequestConversionFromRequest(info, convertedRequest)
 		jsonData, err := common.Marshal(convertedRequest)
@@ -125,6 +130,16 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		httpResp = resp.(*http.Response)
 
 		if httpResp.StatusCode != http.StatusOK {
+			if shouldFallbackResponsesToChat(httpResp.StatusCode) &&
+				!model_setting.GetGlobalSettings().PassThroughRequestEnabled &&
+				!info.ChannelSetting.PassThroughBodyEnabled {
+				_ = httpResp.Body.Close()
+				usage, fallbackErr := responsesViaChatCompletions(c, info, adaptor, request)
+				if fallbackErr == nil {
+					postResponsesUsage(c, info, usage)
+					return nil
+				}
+			}
 			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
 			// reset status code 重置状态码
 			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
@@ -163,4 +178,16 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		service.PostTextConsumeQuota(c, info, usageDto, nil)
 	}
 	return nil
+}
+
+func shouldFallbackResponsesToChat(statusCode int) bool {
+	return statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed
+}
+
+func postResponsesUsage(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) {
+	if strings.HasPrefix(info.OriginModelName, "gpt-4o-audio") {
+		service.PostAudioConsumeQuota(c, info, usage, "")
+		return
+	}
+	service.PostTextConsumeQuota(c, info, usage, nil)
 }

@@ -348,6 +348,20 @@ func testChannel(channel *model.Channel, testUserID int, testModel string, endpo
 		// Response 请求 - request 已经是正确的类型
 		if responseReq, ok := request.(*dto.OpenAIResponsesRequest); ok {
 			convertedRequest, err = adaptor.ConvertOpenAIResponsesRequest(c, info, *responseReq)
+			if err != nil {
+				chatReq, convErr := service.ResponsesRequestToChatCompletionsRequest(responseReq)
+				if convErr != nil {
+					return testResult{
+						context:     c,
+						localErr:    convErr,
+						newAPIError: types.NewError(convErr, types.ErrorCodeConvertRequestFailed),
+					}
+				}
+				info.RelayMode = relayconstant.RelayModeChatCompletions
+				info.RequestURLPath = "/v1/chat/completions"
+				info.AppendRequestConversion(types.RelayFormatOpenAI)
+				convertedRequest, err = adaptor.ConvertOpenAIRequest(c, info, chatReq)
+			}
 		} else {
 			return testResult{
 				context:     c,

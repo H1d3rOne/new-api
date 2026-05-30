@@ -2,7 +2,8 @@ package common
 
 import "github.com/QuantumNous/new-api/constant"
 
-// GetEndpointTypesByChannelType 获取渠道最优先端点类型（所有的渠道都支持 OpenAI 端点）
+// GetEndpointTypesByChannelType 获取渠道最优先端点类型。
+// 文本模型通过端点转换同时支持 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
 func GetEndpointTypesByChannelType(channelType int, modelName string) []constant.EndpointType {
 	var endpointTypes []constant.EndpointType
 	switch channelType {
@@ -19,27 +20,46 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
 	case constant.ChannelTypeAws:
 		fallthrough
 	case constant.ChannelTypeAnthropic:
-		endpointTypes = []constant.EndpointType{constant.EndpointTypeAnthropic, constant.EndpointTypeOpenAI}
+		endpointTypes = withTextCompatibleEndpointTypes(constant.EndpointTypeAnthropic)
 	case constant.ChannelTypeVertexAi:
 		fallthrough
 	case constant.ChannelTypeGemini:
-		endpointTypes = []constant.EndpointType{constant.EndpointTypeGemini, constant.EndpointTypeOpenAI}
-	case constant.ChannelTypeOpenRouter: // OpenRouter 只支持 OpenAI 端点
-		endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAI}
+		endpointTypes = withTextCompatibleEndpointTypes(constant.EndpointTypeGemini)
+	case constant.ChannelTypeOpenRouter:
+		endpointTypes = withTextCompatibleEndpointTypes(constant.EndpointTypeOpenAI)
 	case constant.ChannelTypeXai:
-		endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAI, constant.EndpointTypeOpenAIResponse}
+		endpointTypes = withTextCompatibleEndpointTypes(constant.EndpointTypeOpenAI, constant.EndpointTypeOpenAIResponse)
 	case constant.ChannelTypeSora:
 		endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAIVideo}
 	default:
 		if IsOpenAIResponseOnlyModel(modelName) {
-			endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAIResponse}
+			endpointTypes = withTextCompatibleEndpointTypes(constant.EndpointTypeOpenAIResponse)
 		} else {
-			endpointTypes = []constant.EndpointType{constant.EndpointTypeOpenAI}
+			endpointTypes = withTextCompatibleEndpointTypes(constant.EndpointTypeOpenAI)
 		}
 	}
 	if IsImageGenerationModel(modelName) {
 		// add to first
 		endpointTypes = append([]constant.EndpointType{constant.EndpointTypeImageGeneration}, endpointTypes...)
 	}
+	return endpointTypes
+}
+
+func withTextCompatibleEndpointTypes(preferred ...constant.EndpointType) []constant.EndpointType {
+	endpointTypes := make([]constant.EndpointType, 0, len(preferred)+3)
+	add := func(endpointType constant.EndpointType) {
+		for _, existing := range endpointTypes {
+			if existing == endpointType {
+				return
+			}
+		}
+		endpointTypes = append(endpointTypes, endpointType)
+	}
+	for _, endpointType := range preferred {
+		add(endpointType)
+	}
+	add(constant.EndpointTypeOpenAI)
+	add(constant.EndpointTypeOpenAIResponse)
+	add(constant.EndpointTypeAnthropic)
 	return endpointTypes
 }

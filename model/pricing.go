@@ -1,10 +1,9 @@
 package model
 
 import (
-	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
-
 	"sync"
 	"time"
 
@@ -99,10 +98,11 @@ func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
 	if model == "" {
 		return make([]constant.EndpointType, 0)
 	}
+	GetPricing()
 	modelSupportEndpointsLock.RLock()
 	defer modelSupportEndpointsLock.RUnlock()
 	if endpoints, ok := modelSupportEndpointTypes[model]; ok {
-		return endpoints
+		return append([]constant.EndpointType(nil), endpoints...)
 	}
 	return make([]constant.EndpointType, 0)
 }
@@ -220,17 +220,23 @@ func updatePricing() {
 			continue
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
-			endpoints := make([]string, 0, len(raw))
+		if err := common.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
+			endpointTypes := make([]constant.EndpointType, 0, len(raw))
 			for k, v := range raw {
 				switch v.(type) {
 				case string, map[string]interface{}:
-					if !common.StringsContains(endpoints, k) {
-						endpoints = append(endpoints, k)
+					endpointType := constant.EndpointType(k)
+					if !slices.Contains(endpointTypes, endpointType) {
+						endpointTypes = append(endpointTypes, endpointType)
 					}
 				}
 			}
-			if len(endpoints) > 0 {
+			endpointTypes = common.ExpandTextCompatibleEndpointTypes(endpointTypes)
+			if len(endpointTypes) > 0 {
+				endpoints := make([]string, 0, len(endpointTypes))
+				for _, endpointType := range endpointTypes {
+					endpoints = append(endpoints, string(endpointType))
+				}
 				modelSupportEndpointsStr[modelName] = endpoints
 			}
 		}
@@ -264,7 +270,7 @@ func updatePricing() {
 			continue
 		}
 		var raw map[string]interface{}
-		if err := json.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
+		if err := common.Unmarshal([]byte(meta.Endpoints), &raw); err == nil {
 			for k, v := range raw {
 				switch val := v.(type) {
 				case string:

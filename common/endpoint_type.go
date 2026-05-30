@@ -45,6 +45,27 @@ func GetEndpointTypesByChannelType(channelType int, modelName string) []constant
 	return endpointTypes
 }
 
+func ExpandTextCompatibleEndpointTypes(endpointTypes []constant.EndpointType) []constant.EndpointType {
+	for _, endpointType := range endpointTypes {
+		if isTextCompatibleEndpointType(endpointType) {
+			return withTextCompatibleEndpointTypes(endpointTypes...)
+		}
+	}
+	return append([]constant.EndpointType(nil), endpointTypes...)
+}
+
+func isTextCompatibleEndpointType(endpointType constant.EndpointType) bool {
+	switch endpointType {
+	case constant.EndpointTypeOpenAI,
+		constant.EndpointTypeOpenAIResponse,
+		constant.EndpointTypeAnthropic,
+		constant.EndpointTypeGemini:
+		return true
+	default:
+		return false
+	}
+}
+
 func withTextCompatibleEndpointTypes(preferred ...constant.EndpointType) []constant.EndpointType {
 	endpointTypes := make([]constant.EndpointType, 0, len(preferred)+3)
 	add := func(endpointType constant.EndpointType) {

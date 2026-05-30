@@ -78,6 +78,15 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		}
 		requestBody = common.ReaderOnly(storage)
 	} else {
+		if shouldRouteResponsesViaNativeTextEndpoint(info) {
+			usage, fallbackErr := responsesViaChatCompletions(c, info, adaptor, request)
+			if fallbackErr != nil {
+				return fallbackErr
+			}
+			postResponsesUsage(c, info, usage)
+			return nil
+		}
+
 		convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *request)
 		if err != nil {
 			usage, fallbackErr := responsesViaChatCompletions(c, info, adaptor, request)
@@ -182,6 +191,27 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 
 func shouldFallbackResponsesToChat(statusCode int) bool {
 	return statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed
+}
+
+func shouldRouteResponsesViaNativeTextEndpoint(info *relaycommon.RelayInfo) bool {
+	if info == nil {
+		return false
+	}
+	if info.RelayMode != relayconstant.RelayModeResponses {
+		return false
+	}
+	endpointTypes := common.GetEndpointTypesByChannelType(info.ChannelType, info.UpstreamModelName)
+	if len(endpointTypes) == 0 {
+		return false
+	}
+	switch endpointTypes[0] {
+	case appconstant.EndpointTypeOpenAI,
+		appconstant.EndpointTypeAnthropic,
+		appconstant.EndpointTypeGemini:
+		return true
+	default:
+		return false
+	}
 }
 
 func postResponsesUsage(c *gin.Context, info *relaycommon.RelayInfo, usage *dto.Usage) {

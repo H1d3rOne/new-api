@@ -155,6 +155,7 @@ function buildTrafficRewriteRule(
     response_match_enabled: safeRequestMatch && hasResponseMatch,
     intercept_request: true,
     intercept_response: safeRequestMatch,
+    script_enabled: false,
     block_enabled: false,
     block_status_code: log.status_code || 200,
     block_content_type: log.response_content_type || 'application/json',
@@ -176,6 +177,7 @@ function buildTrafficRewriteRule(
       safeRequestMatch && log.status_code ? String(log.status_code) : '',
     response_url_rewrite: '',
     response_script: '',
+    script: '',
   }
 }
 

@@ -142,6 +142,7 @@ export interface InterceptRule {
   response_match_enabled: boolean
   intercept_request: boolean
   intercept_response: boolean
+  script_enabled: boolean
 
   // Request actions
   block_enabled: boolean
@@ -162,6 +163,7 @@ export interface InterceptRule {
   response_status_rewrite: string
   response_url_rewrite: string
   response_script: string
+  script: string
 
   created_at: number
   updated_at: number

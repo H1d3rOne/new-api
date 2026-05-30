@@ -63,6 +63,7 @@ type TrafficInterceptRule struct {
 	ResponseMatchEnabled bool `json:"response_match_enabled" gorm:"default:false"`
 	InterceptRequest     bool `json:"intercept_request" gorm:"default:false"`
 	InterceptResponse    bool `json:"intercept_response" gorm:"default:false"`
+	ScriptEnabled        bool `json:"script_enabled" gorm:"default:false"`
 
 	// Request actions
 	BlockEnabled           bool   `json:"block_enabled" gorm:"default:false"`
@@ -83,6 +84,9 @@ type TrafficInterceptRule struct {
 	ResponseStatusRewrite    string `json:"response_status_rewrite" gorm:"type:varchar(64);default:''"`
 	ResponseURLRewrite       string `json:"response_url_rewrite" gorm:"type:text"`
 	ResponseScript           string `json:"response_script" gorm:"type:text"`
+
+	// Script action
+	Script string `json:"script" gorm:"type:text"`
 
 	CreatedAt int64 `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt int64 `json:"updated_at" gorm:"autoUpdateTime"`

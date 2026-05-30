@@ -65,7 +65,7 @@ interface InterceptRuleDialogProps {
   rule: Partial<InterceptRule> | null
   sourceLog?: TrafficLog | null
   open: boolean
-  initialTab?: 'basic' | 'request' | 'response'
+  initialTab?: 'basic' | 'request' | 'response' | 'script'
   onOpenChange: (open: boolean) => void
   onSaved: () => void
 }
@@ -99,6 +99,7 @@ const EMPTY_RULE: Partial<InterceptRule> = {
   response_match_enabled: false,
   intercept_request: true,
   intercept_response: false,
+  script_enabled: false,
   block_enabled: false,
   block_status_code: 403,
   block_content_type: 'application/json',
@@ -115,6 +116,7 @@ const EMPTY_RULE: Partial<InterceptRule> = {
   response_status_rewrite: '',
   response_url_rewrite: '',
   response_script: '',
+  script: '',
 }
 
 const ALL_METHODS_VALUE = '__all__'
@@ -130,6 +132,23 @@ const MESSAGE_CONTENT_MODES: MessageContentRewrite['mode'][] = [
   'first',
   'all',
 ]
+const SCRIPT_PLACEHOLDER = `async function onRequest(context, request) {
+  if (request.body && request.headers["content-type"] && request.headers["content-type"].includes("application/json")) {
+    try {
+      var body = JSON.parse(request.body)
+      if (body.client_metadata) {
+        delete body.client_metadata
+        request.body = JSON.stringify(body)
+        request.headers["content-length"] = String(request.body.length)
+      }
+    } catch (e) {}
+  }
+  return request
+}
+
+async function onResponse(context, request, response) {
+  return response
+}`
 
 function exprString(value: string): string {
   return JSON.stringify(value ?? '')
@@ -513,9 +532,9 @@ function PayloadRewriteTextarea(props: {
 export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
   const { t } = useTranslation()
   const [form, setForm] = useState<Partial<InterceptRule>>(EMPTY_RULE)
-  const [activeTab, setActiveTab] = useState<'basic' | 'request' | 'response'>(
-    'basic'
-  )
+  const [activeTab, setActiveTab] = useState<
+    'basic' | 'request' | 'response' | 'script'
+  >('basic')
   const [saving, setSaving] = useState(false)
   const [rawRequestBody, setRawRequestBody] = useState('')
   const [rawResponseBody, setRawResponseBody] = useState('')
@@ -535,6 +554,7 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
   const requestRewriteEnabled = form.intercept_request ?? false
   const responseMatchEnabled = form.response_match_enabled ?? false
   const responseRewriteEnabled = form.intercept_response ?? false
+  const scriptEnabled = form.script_enabled ?? false
   const matchLimit = Number(form.match_limit || 0)
   const matchLimitUnlimited = matchLimit <= 0
   const requestMessageMatches = parseMessageContentMatches(
@@ -1197,6 +1217,7 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
               <TabsTrigger value='response'>
                 {t('Response Actions')}
               </TabsTrigger>
+              <TabsTrigger value='script'>{t('Script')}</TabsTrigger>
             </TabsList>
 
             <TabsContent value='basic' className='space-y-4'>
@@ -1309,25 +1330,6 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
                     />
                   )}
                   {renderRequestMessageRewriteFields()}
-                  <div className='space-y-2'>
-                    <Label htmlFor='request_script'>
-                      {t('Request Script')}
-                    </Label>
-                    <Textarea
-                      id='request_script'
-                      value={form.request_script || ''}
-                      onChange={(e) =>
-                        updateField('request_script', e.target.value)
-                      }
-                      placeholder={`{"headers": {"X-Debug": "1"}}`}
-                      rows={5}
-                      className='font-mono text-sm'
-                      disabled={!requestRewriteEnabled}
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t('Return an object to modify request headers.')}
-                    </p>
-                  </div>
                 </div>
               </div>
             </TabsContent>
@@ -1450,27 +1452,40 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
                       collapsible
                     />
                   )}
-                  <div className='space-y-2'>
-                    <Label htmlFor='response_script'>
-                      {t('Response Script')}
-                    </Label>
-                    <Textarea
-                      id='response_script'
-                      value={form.response_script || ''}
-                      onChange={(e) =>
-                        updateField('response_script', e.target.value)
-                      }
-                      placeholder={`{"status": response.Status, "url": response.URL, "body": response.Body}`}
-                      rows={5}
-                      className='font-mono text-sm'
-                      disabled={!responseRewriteEnabled}
-                    />
-                    <p className='text-muted-foreground text-xs'>
-                      {t(
-                        'Return an object to modify response url, status and body.'
-                      )}
-                    </p>
-                  </div>
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value='script' className='space-y-4'>
+              <div className='space-y-4 rounded-md border p-3'>
+                <div className='flex items-center gap-2'>
+                  <Checkbox
+                    id='script_enabled'
+                    checked={scriptEnabled}
+                    onCheckedChange={(checked) =>
+                      updateField('script_enabled', Boolean(checked))
+                    }
+                  />
+                  <Label htmlFor='script_enabled'>{t('Script Rewrite')}</Label>
+                </div>
+                <div
+                  className={cn('space-y-2', !scriptEnabled && 'opacity-60')}
+                >
+                  <Label htmlFor='script'>{t('Script')}</Label>
+                  <Textarea
+                    id='script'
+                    value={form.script || ''}
+                    onChange={(e) => updateField('script', e.target.value)}
+                    placeholder={SCRIPT_PLACEHOLDER}
+                    rows={18}
+                    className='font-mono text-sm'
+                    disabled={!scriptEnabled}
+                  />
+                  <p className='text-muted-foreground text-xs'>
+                    {t(
+                      'Use JavaScript onRequest/onResponse hooks; script can mutate both request and response objects.'
+                    )}
+                  </p>
                 </div>
               </div>
             </TabsContent>

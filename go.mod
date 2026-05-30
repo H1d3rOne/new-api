@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.4
 	github.com/aws/smithy-go v1.24.2
 	github.com/bytedance/gopkg v0.1.3
+	github.com/dop251/goja v0.0.0-20250630131328-58d95d85e994
 	github.com/gin-contrib/cors v1.7.2
 	github.com/gin-contrib/gzip v0.0.6
 	github.com/gin-contrib/sessions v0.0.5
@@ -61,6 +62,11 @@ require (
 )
 
 require github.com/waffo-com/waffo-pancake-sdk-go v0.3.1
+
+require (
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
+	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
+)
 
 require (
 	github.com/DmitriyVTitov/size v1.5.0 // indirect

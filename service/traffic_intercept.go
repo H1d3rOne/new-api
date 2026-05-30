@@ -17,11 +17,13 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 
+	"github.com/dop251/goja"
 	"github.com/expr-lang/expr"
 	"github.com/gin-gonic/gin"
 )
 
 const trafficInterceptCacheTTL = 10 * time.Second
+const trafficInterceptScriptTimeout = 500 * time.Millisecond
 const trafficInterceptOriginalRequestBodyKey = "traffic_intercept_original_request_body"
 const trafficInterceptConsumedRuleMatchesKey = "traffic_intercept_consumed_rule_matches"
 const trafficInterceptStreamContentRewriteKey = "traffic_intercept_stream_content_rewrite"
@@ -209,6 +211,20 @@ func ApplyTrafficInboundInterceptor(c *gin.Context) bool {
 		}
 
 		if strings.TrimSpace(rule.RequestScript) != "" {
+			if output, ran, err := runTrafficInterceptJSHook(rule.RequestScript, "onRequest", rule, reqCtx, nil); ran || err != nil {
+				if err != nil {
+					common.SysLog(fmt.Sprintf("traffic intercept rule %d: request script eval error: %v", rule.Id, err))
+					continue
+				}
+				if block, ok := trafficInterceptScriptBlockAction(output, rule); ok {
+					if !trafficInterceptConsumeRuleMatch(c, cr) {
+						continue
+					}
+					writeTrafficInterceptBlock(c, block.status, block.contentType, block.body, block.headers)
+					return true
+				}
+				continue
+			}
 			out, err := evalTrafficInterceptExpression(rule.RequestScript, trafficInterceptEnv(reqCtx, nil))
 			if err != nil {
 				common.SysLog(fmt.Sprintf("traffic intercept rule %d: request script eval error: %v", rule.Id, err))
@@ -279,22 +295,72 @@ func ApplyTrafficUpstreamRequestInterceptor(c *gin.Context, req *http.Request, i
 		}
 
 		if strings.TrimSpace(rule.RequestScript) != "" {
-			out, err := evalTrafficInterceptExpression(rule.RequestScript, env)
-			if err != nil {
-				common.SysLog(fmt.Sprintf("traffic intercept rule %d: request script eval error: %v", rule.Id, err))
-				continue
-			}
-			action := trafficInterceptMap(out)
-			if len(action) == 0 {
-				continue
-			}
-			if hasAction(action, "headers") {
-				applyHeaderActionMap(req.Header, action["headers"])
-				reqCtx.Header = headerToStringMap(req.Header)
-				reqCtx.Headers = reqCtx.Header
+			if output, ran, err := runTrafficInterceptJSHook(rule.RequestScript, "onRequest", rule, reqCtx, nil); ran || err != nil {
+				if err != nil {
+					common.SysLog(fmt.Sprintf("traffic intercept rule %d: request script eval error: %v", rule.Id, err))
+					continue
+				}
+				applyTrafficInterceptScriptRequest(req, reqCtx, output.Request)
 				setTrafficInterceptLoggedRequest(c, reqCtx)
+				env = trafficInterceptEnv(reqCtx, nil)
+			} else {
+				out, err := evalTrafficInterceptExpression(rule.RequestScript, env)
+				if err != nil {
+					common.SysLog(fmt.Sprintf("traffic intercept rule %d: request script eval error: %v", rule.Id, err))
+					continue
+				}
+				action := trafficInterceptMap(out)
+				if len(action) == 0 {
+					continue
+				}
+				if hasAction(action, "headers") {
+					applyHeaderActionMap(req.Header, action["headers"])
+					reqCtx.Header = headerToStringMap(req.Header)
+					reqCtx.Headers = reqCtx.Header
+					setTrafficInterceptLoggedRequest(c, reqCtx)
+				}
 			}
 		}
+	}
+
+	for _, cr := range rules {
+		rule := cr.Rule
+		if rule == nil || trafficInterceptRuleMatchLimitReached(cr) || !rule.InterceptResponse || strings.TrimSpace(rule.ResponseScript) == "" || !matchTrafficInterceptResponseCandidateRule(cr, reqCtx) {
+			continue
+		}
+		output, ran, err := runTrafficInterceptJSHook(rule.ResponseScript, "onRequest", rule, reqCtx, nil)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("traffic intercept rule %d: response script onRequest eval error: %v", rule.Id, err))
+			continue
+		}
+		if !ran {
+			continue
+		}
+		if !trafficInterceptConsumeRuleMatch(c, cr) {
+			continue
+		}
+		applyTrafficInterceptScriptRequest(req, reqCtx, output.Request)
+		setTrafficInterceptLoggedRequest(c, reqCtx)
+	}
+
+	for _, cr := range rules {
+		rule := cr.Rule
+		if rule == nil || trafficInterceptRuleMatchLimitReached(cr) || !trafficInterceptRuleHasScriptAction(rule) || !matchTrafficInterceptRequestRule(cr, reqCtx) {
+			continue
+		}
+		output, ran, err := runTrafficInterceptJSHook(rule.Script, "onRequest", rule, reqCtx, nil)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("traffic intercept rule %d: script onRequest eval error: %v", rule.Id, err))
+			continue
+		}
+		if !ran {
+			continue
+		}
+		if !trafficInterceptConsumeRuleMatch(c, cr) {
+			continue
+		}
+		applyTrafficInterceptScriptRequest(req, reqCtx, output.Request)
+		setTrafficInterceptLoggedRequest(c, reqCtx)
 	}
 
 	return nil
@@ -317,7 +383,7 @@ func ApplyTrafficUpstreamResponseInterceptor(c *gin.Context, req *http.Request, 
 	matched := make([]*trafficInterceptCachedRule, 0, len(rules))
 	for _, cr := range rules {
 		rule := cr.Rule
-		if rule == nil || trafficInterceptRuleMatchLimitReached(cr) || !rule.InterceptResponse || !matchTrafficInterceptResponseCandidateRule(cr, reqCtx) {
+		if rule == nil || trafficInterceptRuleMatchLimitReached(cr) || (!rule.InterceptResponse && !trafficInterceptRuleHasScriptAction(rule)) || !matchTrafficInterceptResponseCandidateRule(cr, reqCtx) {
 			continue
 		}
 		matched = append(matched, cr)
@@ -360,76 +426,105 @@ func ApplyTrafficUpstreamResponseInterceptor(c *gin.Context, req *http.Request, 
 		if !matchTrafficInterceptResponseCondition(cr, reqCtx, respCtx) {
 			continue
 		}
-		if !trafficInterceptRuleHasResponseRewriteAction(rule, isStream, encodedBody) || !trafficInterceptConsumeRuleMatch(c, cr) {
-			continue
-		}
-		env := trafficInterceptEnv(reqCtx, respCtx)
 
-		if strings.TrimSpace(rule.ResponseHeaderOps) != "" {
-			applyTrafficInterceptHeaderOps(resp.Header, rule.ResponseHeaderOps, env)
-			respCtx.Header = headerToStringMap(resp.Header)
-			respCtx.Headers = respCtx.Header
-			env = trafficInterceptEnv(reqCtx, respCtx)
-		}
-
-		if trafficInterceptHasResponseStructuredRewrite(rule) && !encodedBody {
-			responseContentRewrite := rule.ResponseContentRewrite
-			responseToolCallsRewrite := rule.ResponseToolCallsRewrite
-			if isStream && strings.TrimSpace(responseContentRewrite) != "" {
-				setTrafficInterceptStreamContentRewrite(c, trafficInterceptResponseContentRewriteValue(responseContentRewrite, env))
-				responseContentRewrite = ""
-			}
-			if newBody, ok := applyTrafficInterceptResponseRewrites(
-				respCtx.Body,
-				responseContentRewrite,
-				responseToolCallsRewrite,
-				env,
-			); ok {
-				respCtx.Body = newBody
-				env = trafficInterceptEnv(reqCtx, respCtx)
-			}
-		}
-
-		if strings.TrimSpace(rule.ResponseStatusRewrite) != "" {
-			if out, err := evalTrafficInterceptExpression(rule.ResponseStatusRewrite, env); err == nil {
-				respCtx.Status = anyToInt(out, respCtx.Status)
-				env = trafficInterceptEnv(reqCtx, respCtx)
-			} else {
-				common.SysLog(fmt.Sprintf("traffic intercept rule %d: response status rewrite error: %v", rule.Id, err))
-			}
-		}
-
-		if strings.TrimSpace(rule.ResponseURLRewrite) != "" {
-			if newURL, ok := evalTrafficInterceptString(rule.ResponseURLRewrite, env); ok {
-				respCtx.URL = applyHTTPResponseURL(req, resp, newURL)
-				env = trafficInterceptEnv(reqCtx, respCtx)
-			}
-		}
-
-		if strings.TrimSpace(rule.ResponseScript) != "" {
-			out, err := evalTrafficInterceptExpression(rule.ResponseScript, trafficInterceptEnv(reqCtx, respCtx))
-			if err != nil {
-				common.SysLog(fmt.Sprintf("traffic intercept rule %d: response script eval error: %v", rule.Id, err))
+		if rule.InterceptResponse && trafficInterceptRuleHasResponseRewriteAction(rule, isStream, encodedBody) {
+			if !trafficInterceptConsumeRuleMatch(c, cr) {
 				continue
 			}
-			action := trafficInterceptMap(out)
-			if len(action) == 0 {
-				continue
-			}
-			if hasAction(action, "headers") {
-				applyHeaderActionMap(resp.Header, action["headers"])
+			env := trafficInterceptEnv(reqCtx, respCtx)
+
+			if strings.TrimSpace(rule.ResponseHeaderOps) != "" {
+				applyTrafficInterceptHeaderOps(resp.Header, rule.ResponseHeaderOps, env)
 				respCtx.Header = headerToStringMap(resp.Header)
 				respCtx.Headers = respCtx.Header
+				env = trafficInterceptEnv(reqCtx, respCtx)
 			}
-			if status, ok := action["status"]; ok {
-				respCtx.Status = anyToInt(status, respCtx.Status)
+
+			if trafficInterceptHasResponseStructuredRewrite(rule) && !encodedBody {
+				responseContentRewrite := rule.ResponseContentRewrite
+				responseToolCallsRewrite := rule.ResponseToolCallsRewrite
+				if isStream && strings.TrimSpace(responseContentRewrite) != "" {
+					setTrafficInterceptStreamContentRewrite(c, trafficInterceptResponseContentRewriteValue(responseContentRewrite, env))
+					responseContentRewrite = ""
+				}
+				if newBody, ok := applyTrafficInterceptResponseRewrites(
+					respCtx.Body,
+					responseContentRewrite,
+					responseToolCallsRewrite,
+					env,
+				); ok {
+					respCtx.Body = newBody
+					env = trafficInterceptEnv(reqCtx, respCtx)
+				}
 			}
-			if newURL, ok := actionString(action, "url"); ok {
-				respCtx.URL = applyHTTPResponseURL(req, resp, newURL)
+
+			if strings.TrimSpace(rule.ResponseStatusRewrite) != "" {
+				if out, err := evalTrafficInterceptExpression(rule.ResponseStatusRewrite, env); err == nil {
+					respCtx.Status = anyToInt(out, respCtx.Status)
+					env = trafficInterceptEnv(reqCtx, respCtx)
+				} else {
+					common.SysLog(fmt.Sprintf("traffic intercept rule %d: response status rewrite error: %v", rule.Id, err))
+				}
 			}
-			if newBody, ok := actionString(action, "body"); ok && !isStream && !encodedBody {
-				respCtx.Body = newBody
+
+			if strings.TrimSpace(rule.ResponseURLRewrite) != "" {
+				if newURL, ok := evalTrafficInterceptString(rule.ResponseURLRewrite, env); ok {
+					respCtx.URL = applyHTTPResponseURL(req, resp, newURL)
+					env = trafficInterceptEnv(reqCtx, respCtx)
+				}
 			}
+
+			if strings.TrimSpace(rule.ResponseScript) != "" {
+				if output, ran, err := runTrafficInterceptJSHook(rule.ResponseScript, "onResponse", rule, reqCtx, respCtx); ran || err != nil {
+					if err != nil {
+						common.SysLog(fmt.Sprintf("traffic intercept rule %d: response script eval error: %v", rule.Id, err))
+						continue
+					}
+					applyTrafficInterceptScriptRequest(req, reqCtx, output.Request)
+					applyTrafficInterceptScriptResponse(req, resp, respCtx, output.Response, encodedBody)
+					env = trafficInterceptEnv(reqCtx, respCtx)
+				} else {
+					out, err := evalTrafficInterceptExpression(rule.ResponseScript, trafficInterceptEnv(reqCtx, respCtx))
+					if err != nil {
+						common.SysLog(fmt.Sprintf("traffic intercept rule %d: response script eval error: %v", rule.Id, err))
+						continue
+					}
+					action := trafficInterceptMap(out)
+					if len(action) == 0 {
+						continue
+					}
+					if hasAction(action, "headers") {
+						applyHeaderActionMap(resp.Header, action["headers"])
+						respCtx.Header = headerToStringMap(resp.Header)
+						respCtx.Headers = respCtx.Header
+					}
+					if status, ok := action["status"]; ok {
+						respCtx.Status = anyToInt(status, respCtx.Status)
+					}
+					if newURL, ok := actionString(action, "url"); ok {
+						respCtx.URL = applyHTTPResponseURL(req, resp, newURL)
+					}
+					if newBody, ok := actionString(action, "body"); ok && !isStream && !encodedBody {
+						respCtx.Body = newBody
+					}
+				}
+			}
+		}
+
+		if trafficInterceptRuleHasScriptAction(rule) {
+			output, ran, err := runTrafficInterceptJSHook(rule.Script, "onResponse", rule, reqCtx, respCtx)
+			if err != nil {
+				common.SysLog(fmt.Sprintf("traffic intercept rule %d: script onResponse eval error: %v", rule.Id, err))
+				continue
+			}
+			if !ran {
+				continue
+			}
+			if !trafficInterceptConsumeRuleMatch(c, cr) {
+				continue
+			}
+			applyTrafficInterceptScriptRequest(req, reqCtx, output.Request)
+			applyTrafficInterceptScriptResponse(req, resp, respCtx, output.Response, encodedBody)
 		}
 	}
 
@@ -539,6 +634,10 @@ func trafficInterceptRuleHasResponseRewriteAction(rule *model.TrafficInterceptRu
 		strings.TrimSpace(rule.ResponseStatusRewrite) != "" ||
 		strings.TrimSpace(rule.ResponseURLRewrite) != "" ||
 		strings.TrimSpace(rule.ResponseScript) != ""
+}
+
+func trafficInterceptRuleHasScriptAction(rule *model.TrafficInterceptRule) bool {
+	return rule != nil && rule.ScriptEnabled && strings.TrimSpace(rule.Script) != ""
 }
 
 func trafficInterceptHasResponseStructuredRewrite(rule *model.TrafficInterceptRule) bool {
@@ -795,6 +894,9 @@ func trafficRulesNeedRequestBody(rules []*trafficInterceptCachedRule, requestPha
 		if requestPhase && trafficResponseRuleNeedsRequestBody(r) {
 			return true
 		}
+		if requestPhase && trafficInterceptRuleHasScriptAction(r) && trafficExpressionReferencesBody(r.Script) {
+			return true
+		}
 	}
 	return false
 }
@@ -808,7 +910,7 @@ func trafficRulesNeedResponseBody(rules []*trafficInterceptCachedRule) bool {
 			continue
 		}
 		r := cr.Rule
-		if !r.InterceptResponse {
+		if !r.InterceptResponse && !trafficInterceptRuleHasScriptAction(r) {
 			continue
 		}
 		if r.ResponseMatchEnabled &&
@@ -818,7 +920,7 @@ func trafficRulesNeedResponseBody(rules []*trafficInterceptCachedRule) bool {
 		}
 		if trafficInterceptHasResponseStructuredRewrite(r) ||
 			strings.TrimSpace(r.ResponseScript) != "" ||
-			trafficExpressionReferencesBody(r.ResponseHeaderOps, r.ResponseStatusRewrite, r.ResponseURLRewrite) {
+			trafficExpressionReferencesBody(r.ResponseHeaderOps, r.ResponseStatusRewrite, r.ResponseURLRewrite, r.Script) {
 			return true
 		}
 	}
@@ -834,7 +936,7 @@ func trafficResponseRulesNeedRequestBody(rules []*trafficInterceptCachedRule) bo
 			continue
 		}
 		r := cr.Rule
-		if !r.InterceptResponse {
+		if !r.InterceptResponse && !trafficInterceptRuleHasScriptAction(r) {
 			continue
 		}
 		if trafficResponseRuleNeedsRequestBody(r) {
@@ -859,7 +961,9 @@ func trafficRequestRuleNeedsRequestBody(rule *model.TrafficInterceptRule) bool {
 
 func trafficResponseRuleNeedsRequestBody(rule *model.TrafficInterceptRule) bool {
 	if rule == nil || !rule.InterceptResponse {
-		return false
+		if !trafficInterceptRuleHasScriptAction(rule) {
+			return false
+		}
 	}
 	if rule.RequestMatchEnabled &&
 		(strings.TrimSpace(rule.RequestContentMatch) != "" ||
@@ -873,6 +977,7 @@ func trafficResponseRuleNeedsRequestBody(rule *model.TrafficInterceptRule) bool 
 		rule.ResponseStatusRewrite,
 		rule.ResponseURLRewrite,
 		rule.ResponseScript,
+		rule.Script,
 	)
 }
 
@@ -942,6 +1047,343 @@ func trafficInterceptCompileEnv() map[string]interface{} {
 		"responseFunctionNames": trafficInterceptResponseFunctionNames,
 		"responsePreview":       trafficInterceptResponsePreview,
 	}
+}
+
+type trafficInterceptScriptOutput struct {
+	Request  map[string]interface{}
+	Response map[string]interface{}
+	Result   map[string]interface{}
+}
+
+type trafficInterceptScriptBlock struct {
+	status      int
+	contentType string
+	body        string
+	headers     map[string]string
+}
+
+func runTrafficInterceptJSHook(script string, hook string, rule *model.TrafficInterceptRule, reqCtx *TrafficInterceptRequestContext, respCtx *TrafficInterceptResponseContext) (*trafficInterceptScriptOutput, bool, error) {
+	script = strings.TrimSpace(script)
+	if script == "" {
+		return nil, false, nil
+	}
+
+	vm := goja.New()
+	installTrafficInterceptJSConsole(vm, rule)
+	timer := time.AfterFunc(trafficInterceptScriptTimeout, func() {
+		vm.Interrupt("traffic intercept script timeout")
+	})
+	defer timer.Stop()
+
+	if _, err := vm.RunString(script); err != nil {
+		if !trafficInterceptScriptLooksLikeJSHook(script, hook) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	fn, ok := goja.AssertFunction(vm.Get(hook))
+	if !ok {
+		return nil, false, nil
+	}
+
+	requestObject := trafficInterceptScriptRequestObject(reqCtx)
+	responseObject := trafficInterceptScriptResponseObject(respCtx)
+	requestValue := vm.ToValue(requestObject)
+	responseValue := goja.Null()
+	if responseObject != nil {
+		responseValue = vm.ToValue(responseObject)
+	}
+	result, err := fn(
+		goja.Undefined(),
+		vm.ToValue(trafficInterceptScriptContextObject(hook, rule)),
+		requestValue,
+		responseValue,
+	)
+	if err != nil {
+		return nil, true, err
+	}
+	result, err = trafficInterceptResolveJSPromise(result)
+	if err != nil {
+		return nil, true, err
+	}
+
+	output := &trafficInterceptScriptOutput{
+		Request:  trafficInterceptMap(requestValue.Export()),
+		Response: trafficInterceptMap(responseValue.Export()),
+		Result:   trafficInterceptJSValueMap(result),
+	}
+	if output.Result != nil {
+		if request := trafficInterceptMap(output.Result["request"]); len(request) > 0 {
+			output.Request = request
+		} else if hook == "onRequest" && trafficInterceptLooksLikeScriptRequest(output.Result) {
+			output.Request = output.Result
+		}
+		if response := trafficInterceptMap(output.Result["response"]); len(response) > 0 {
+			output.Response = response
+		} else if hook == "onResponse" && trafficInterceptLooksLikeScriptResponse(output.Result) {
+			output.Response = output.Result
+		}
+	}
+	return output, true, nil
+}
+
+func installTrafficInterceptJSConsole(vm *goja.Runtime, rule *model.TrafficInterceptRule) {
+	console := vm.NewObject()
+	_ = console.Set("log", func(call goja.FunctionCall) goja.Value {
+		parts := make([]string, 0, len(call.Arguments))
+		for _, arg := range call.Arguments {
+			parts = append(parts, arg.String())
+		}
+		ruleId := 0
+		if rule != nil {
+			ruleId = rule.Id
+		}
+		common.SysLog(fmt.Sprintf("traffic intercept rule %d script: %s", ruleId, strings.Join(parts, " ")))
+		return goja.Undefined()
+	})
+	_ = vm.Set("console", console)
+}
+
+func trafficInterceptResolveJSPromise(value goja.Value) (goja.Value, error) {
+	object, ok := value.(*goja.Object)
+	if !ok {
+		return value, nil
+	}
+	promise, ok := object.Export().(*goja.Promise)
+	if !ok {
+		return value, nil
+	}
+	switch promise.State() {
+	case goja.PromiseStateFulfilled:
+		return promise.Result(), nil
+	case goja.PromiseStateRejected:
+		return nil, fmt.Errorf("promise rejected: %s", promise.Result().String())
+	default:
+		return nil, fmt.Errorf("pending promises are not supported")
+	}
+}
+
+func trafficInterceptJSValueMap(value goja.Value) map[string]interface{} {
+	if value == nil || goja.IsUndefined(value) || goja.IsNull(value) {
+		return nil
+	}
+	return trafficInterceptMap(value.Export())
+}
+
+func trafficInterceptScriptLooksLikeJSHook(script string, hook string) bool {
+	return strings.Contains(script, hook)
+}
+
+func trafficInterceptScriptContextObject(hook string, rule *model.TrafficInterceptRule) map[string]interface{} {
+	phase := strings.TrimPrefix(strings.TrimPrefix(hook, "on"), "On")
+	phase = strings.ToLower(phase)
+	out := map[string]interface{}{
+		"phase": phase,
+	}
+	if rule != nil {
+		out["rule"] = map[string]interface{}{
+			"id":       rule.Id,
+			"name":     rule.Name,
+			"priority": rule.Priority,
+		}
+	}
+	return out
+}
+
+func trafficInterceptScriptRequestObject(ctx *TrafficInterceptRequestContext) map[string]interface{} {
+	if ctx == nil {
+		ctx = &TrafficInterceptRequestContext{Header: map[string]string{}, Headers: map[string]string{}}
+	}
+	return map[string]interface{}{
+		"method":       ctx.Method,
+		"path":         ctx.Path,
+		"url":          ctx.URL,
+		"upstream_url": ctx.UpstreamURL,
+		"model":        ctx.Model,
+		"user_id":      ctx.UserId,
+		"username":     ctx.Username,
+		"token_name":   ctx.TokenName,
+		"group":        ctx.Group,
+		"channel_id":   ctx.ChannelId,
+		"content_type": ctx.ContentType,
+		"headers":      trafficInterceptScriptHeaders(ctx.Header),
+		"body":         ctx.Body,
+	}
+}
+
+func trafficInterceptScriptResponseObject(ctx *TrafficInterceptResponseContext) map[string]interface{} {
+	if ctx == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"url":          ctx.URL,
+		"status":       ctx.Status,
+		"content_type": ctx.ContentType,
+		"headers":      trafficInterceptScriptHeaders(ctx.Header),
+		"body":         ctx.Body,
+	}
+}
+
+func trafficInterceptScriptHeaders(headers map[string]string) map[string]string {
+	out := make(map[string]string, len(headers))
+	for key, value := range headers {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[strings.ToLower(key)] = value
+	}
+	return out
+}
+
+func trafficInterceptLooksLikeScriptRequest(input map[string]interface{}) bool {
+	return trafficInterceptHasAnyKey(input, "method", "path", "url", "upstream_url", "model", "user_id", "username", "content_type", "headers", "body")
+}
+
+func trafficInterceptLooksLikeScriptResponse(input map[string]interface{}) bool {
+	return trafficInterceptHasAnyKey(input, "url", "status", "content_type", "headers", "body")
+}
+
+func trafficInterceptHasAnyKey(input map[string]interface{}, keys ...string) bool {
+	for _, key := range keys {
+		if _, ok := input[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func applyTrafficInterceptScriptRequest(req *http.Request, ctx *TrafficInterceptRequestContext, input map[string]interface{}) {
+	if len(input) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = &TrafficInterceptRequestContext{}
+	}
+	if method, ok := trafficInterceptMapString(input, "method"); ok && strings.TrimSpace(method) != "" {
+		ctx.Method = method
+		if req != nil {
+			req.Method = method
+		}
+	}
+	if rawURL, ok := trafficInterceptFirstMapString(input, "upstream_url", "url"); ok && strings.TrimSpace(rawURL) != "" && req != nil {
+		if err := applyHTTPRequestURL(req, rawURL); err != nil {
+			common.SysLog("traffic intercept script request url error: " + err.Error())
+		} else {
+			updateRequestURLContext(ctx, req)
+		}
+	}
+	if headers, ok := input["headers"]; ok {
+		if req != nil {
+			replaceTrafficInterceptHeaders(req.Header, headers)
+			ctx.Header = headerToStringMap(req.Header)
+		} else {
+			ctx.Header = trafficInterceptStringMap(headers)
+		}
+		ctx.Headers = ctx.Header
+		ctx.ContentType = lookupTrafficInterceptHeader(ctx.Header, "Content-Type")
+	}
+	if contentType, ok := trafficInterceptMapString(input, "content_type"); ok {
+		ctx.ContentType = contentType
+		if req != nil {
+			req.Header.Set("Content-Type", contentType)
+			ctx.Header = headerToStringMap(req.Header)
+			ctx.Headers = ctx.Header
+		}
+	}
+	if body, ok := trafficInterceptMapString(input, "body"); ok {
+		ctx.Body = body
+		if req != nil {
+			setHTTPRequestBody(req, body)
+			ctx.Header = headerToStringMap(req.Header)
+			ctx.Headers = ctx.Header
+		}
+	}
+}
+
+func applyTrafficInterceptScriptResponse(req *http.Request, resp *http.Response, ctx *TrafficInterceptResponseContext, input map[string]interface{}, encodedBody bool) {
+	if ctx == nil || len(input) == 0 {
+		return
+	}
+	if status, ok := input["status"]; ok {
+		ctx.Status = anyToInt(status, ctx.Status)
+	}
+	if rawURL, ok := trafficInterceptMapString(input, "url"); ok {
+		ctx.URL = applyHTTPResponseURL(req, resp, rawURL)
+	}
+	if headers, ok := input["headers"]; ok {
+		if resp != nil {
+			replaceTrafficInterceptHeaders(resp.Header, headers)
+			ctx.Header = headerToStringMap(resp.Header)
+		} else {
+			ctx.Header = trafficInterceptStringMap(headers)
+		}
+		ctx.Headers = ctx.Header
+		ctx.ContentType = lookupTrafficInterceptHeader(ctx.Header, "Content-Type")
+	}
+	if contentType, ok := trafficInterceptMapString(input, "content_type"); ok {
+		ctx.ContentType = contentType
+		if resp != nil {
+			resp.Header.Set("Content-Type", contentType)
+			ctx.Header = headerToStringMap(resp.Header)
+			ctx.Headers = ctx.Header
+		}
+	}
+	if body, ok := trafficInterceptMapString(input, "body"); ok && !encodedBody {
+		ctx.Body = body
+	}
+}
+
+func replaceTrafficInterceptHeaders(header http.Header, input interface{}) {
+	if header == nil || input == nil {
+		return
+	}
+	for key := range header {
+		if !shouldSkipTrafficInterceptHeader(key) {
+			header.Del(key)
+		}
+	}
+	for key, value := range trafficInterceptMap(input) {
+		key = strings.TrimSpace(key)
+		if key == "" || shouldSkipTrafficInterceptHeader(key) || value == nil {
+			continue
+		}
+		text := anyToString(value, "")
+		if strings.EqualFold(strings.TrimSpace(text), "__delete__") {
+			continue
+		}
+		header.Set(key, text)
+	}
+}
+
+func trafficInterceptScriptBlockAction(output *trafficInterceptScriptOutput, rule *model.TrafficInterceptRule) (trafficInterceptScriptBlock, bool) {
+	if output == nil {
+		return trafficInterceptScriptBlock{}, false
+	}
+	for _, input := range []map[string]interface{}{output.Result, output.Request, output.Response} {
+		if len(input) == 0 || !truthy(input["block"]) {
+			continue
+		}
+		body := ""
+		contentType := ""
+		if rule != nil {
+			body = rule.BlockBody
+			contentType = rule.BlockContentType
+		}
+		if text, ok := trafficInterceptFirstMapString(input, "block_body", "response_body", "body"); ok {
+			body = text
+		}
+		if text, ok := trafficInterceptFirstMapString(input, "block_content_type", "content_type"); ok {
+			contentType = text
+		}
+		return trafficInterceptScriptBlock{
+			status:      anyToInt(input["status"], http.StatusForbidden),
+			contentType: contentType,
+			body:        body,
+			headers:     trafficInterceptStringMap(input["headers"]),
+		}, true
+	}
+	return trafficInterceptScriptBlock{}, false
 }
 
 func applyTrafficInterceptMessageContentRewrites(body string, rewritesJSON string, env map[string]interface{}) (string, bool) {
@@ -2620,6 +3062,23 @@ func actionString(action map[string]interface{}, key string) (string, bool) {
 		return "", false
 	}
 	return anyToString(value, ""), true
+}
+
+func trafficInterceptMapString(input map[string]interface{}, key string) (string, bool) {
+	value, ok := input[key]
+	if !ok {
+		return "", false
+	}
+	return anyToString(value, ""), true
+}
+
+func trafficInterceptFirstMapString(input map[string]interface{}, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := trafficInterceptMapString(input, key); ok {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 func anyToString(value interface{}, fallback string) string {

@@ -1,7 +1,9 @@
 package service
 
 import (
+	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -462,6 +464,12 @@ func TestTrafficInterceptMatchLimitAndActionHelpers(t *testing.T) {
 	if !trafficInterceptRuleHasResponseRewriteAction(&model.TrafficInterceptRule{ResponseStatusRewrite: "200"}, true, false) {
 		t.Fatal("response status rewrite should count as a response action")
 	}
+	if !trafficInterceptRuleHasScriptAction(&model.TrafficInterceptRule{ScriptEnabled: true, Script: "async function onRequest() {}"}) {
+		t.Fatal("enabled script should count as a script action")
+	}
+	if trafficInterceptRuleHasScriptAction(&model.TrafficInterceptRule{ScriptEnabled: false, Script: "async function onRequest() {}"}) {
+		t.Fatal("disabled script should not count as a script action")
+	}
 }
 
 func TestTrafficInterceptConsumeRuleMatchInvalidatesCache(t *testing.T) {
@@ -527,6 +535,125 @@ func TestTrafficInterceptResponseContentRewrite(t *testing.T) {
 	}
 	if !strings.Contains(rewritten, `"reasoning_content":"keep reasoning"`) {
 		t.Fatalf("expected reasoning content to be preserved, got %s", rewritten)
+	}
+}
+
+func TestTrafficInterceptJSScriptOnRequest(t *testing.T) {
+	body := `{"messages":[{"role":"user","content":"hello"}],"client_metadata":{"debug":true}}`
+	req, err := http.NewRequest("POST", "http://upstream.example/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx := &TrafficInterceptRequestContext{
+		Method:      req.Method,
+		URL:         req.URL.String(),
+		UpstreamURL: req.URL.String(),
+		Path:        req.URL.Path,
+		ContentType: req.Header.Get("Content-Type"),
+		Header:      headerToStringMap(req.Header),
+		Headers:     headerToStringMap(req.Header),
+		Body:        body,
+	}
+
+	script := `
+async function onRequest(context, request) {
+  if (request.body && request.headers["content-type"] && request.headers["content-type"].includes("application/json")) {
+    var body = JSON.parse(request.body);
+    delete body.client_metadata;
+    request.body = JSON.stringify(body);
+    request.headers["content-length"] = String(request.body.length);
+  }
+  return request;
+}`
+	output, ran, err := runTrafficInterceptJSHook(script, "onRequest", &model.TrafficInterceptRule{Id: 9}, reqCtx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("expected onRequest hook to run")
+	}
+	applyTrafficInterceptScriptRequest(req, reqCtx, output.Request)
+	rewritten, err := readAndRestoreHTTPRequestBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rewritten, "client_metadata") {
+		t.Fatalf("expected client_metadata to be removed, got %s", rewritten)
+	}
+	if req.Header.Get("Content-Length") != strconv.Itoa(len(rewritten)) {
+		t.Fatalf("expected content-length to be updated, got %q for body %q", req.Header.Get("Content-Length"), rewritten)
+	}
+}
+
+func TestTrafficInterceptJSScriptOnResponse(t *testing.T) {
+	req, err := http.NewRequest("POST", "http://upstream.example/v1/chat/completions", strings.NewReader(`{"messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	reqCtx := &TrafficInterceptRequestContext{
+		Method:      req.Method,
+		URL:         req.URL.String(),
+		UpstreamURL: req.URL.String(),
+		Path:        req.URL.Path,
+		ContentType: req.Header.Get("Content-Type"),
+		Header:      headerToStringMap(req.Header),
+		Headers:     headerToStringMap(req.Header),
+		Body:        `{"messages":[]}`,
+	}
+	resp := &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+	respCtx := &TrafficInterceptResponseContext{
+		URL:         req.URL.String(),
+		Status:      200,
+		ContentType: "application/json",
+		Header:      headerToStringMap(resp.Header),
+		Headers:     headerToStringMap(resp.Header),
+		Body:        `{"content":"old"}`,
+	}
+	script := `
+async function onRequest(context, request) {
+  request.headers["x-request-script"] = "1";
+  return request;
+}
+
+async function onResponse(context, request, response) {
+  var body = JSON.parse(response.body);
+  body.content = "new";
+  response.body = JSON.stringify(body);
+  response.status = 201;
+  response.headers["x-response-script"] = request.headers["x-request-script"] || "missing";
+  return { request, response };
+}`
+	requestOutput, ran, err := runTrafficInterceptJSHook(script, "onRequest", &model.TrafficInterceptRule{Id: 10}, reqCtx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("expected onRequest hook to run from response script")
+	}
+	applyTrafficInterceptScriptRequest(req, reqCtx, requestOutput.Request)
+	responseOutput, ran, err := runTrafficInterceptJSHook(script, "onResponse", &model.TrafficInterceptRule{Id: 10}, reqCtx, respCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran {
+		t.Fatal("expected onResponse hook to run")
+	}
+	applyTrafficInterceptScriptRequest(req, reqCtx, responseOutput.Request)
+	applyTrafficInterceptScriptResponse(req, resp, respCtx, responseOutput.Response, false)
+	if respCtx.Status != 201 {
+		t.Fatalf("expected response status to be rewritten, got %d", respCtx.Status)
+	}
+	if got := trafficInterceptResponseContent(respCtx.Body); got != "new" {
+		t.Fatalf("expected response body to be rewritten, got %q in %s", got, respCtx.Body)
+	}
+	if resp.Header.Get("X-Response-Script") != "1" {
+		t.Fatalf("expected response header to see request mutation, got %q", resp.Header.Get("X-Response-Script"))
 	}
 }
 

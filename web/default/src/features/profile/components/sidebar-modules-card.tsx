@@ -21,6 +21,7 @@ import { LayoutDashboard } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
+import { ROLE } from '@/lib/roles'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import {
@@ -120,6 +121,22 @@ export function SidebarModulesCard() {
         },
       ],
     },
+    ...(currentUser && currentUser.role >= ROLE.ADMIN
+      ? [
+          {
+            key: 'admin',
+            title: t('Admin'),
+            description: t('Administrative tools'),
+            modules: [
+              {
+                key: 'traffic',
+                title: t('Traffic Management'),
+                description: t('Inspect traffic and configure interception'),
+              },
+            ],
+          },
+        ]
+      : []),
   ]
 
   const loadConfig = useCallback(async () => {

@@ -302,6 +302,30 @@ func SetApiRouter(router *gin.Engine) {
 			redemptionRoute.DELETE("/invalid", controller.DeleteInvalidRedemption)
 			redemptionRoute.DELETE("/:id", controller.DeleteRedemption)
 		}
+		trafficRoute := apiRouter.Group("/traffic")
+		trafficRoute.Use(middleware.AdminAuth())
+		{
+			trafficRoute.GET("/", controller.GetTrafficLogs)
+			trafficRoute.POST("/:id/replay", controller.ReplayTrafficLog)
+			trafficRoute.GET("/:id", controller.GetTrafficLog)
+		}
+
+		interceptRoute := apiRouter.Group("/intercept")
+		interceptRoute.Use(middleware.AdminAuth())
+		{
+			interceptRoute.GET("/", controller.GetInterceptRules)
+			interceptRoute.GET("/settings", controller.GetInterceptSettings)
+			interceptRoute.PUT("/settings", controller.UpdateInterceptSettings)
+			interceptRoute.GET("/live/settings", controller.GetLiveInterceptSettings)
+			interceptRoute.PUT("/live/settings", controller.UpdateLiveInterceptSettings)
+			interceptRoute.GET("/live/events", controller.GetLiveInterceptEvents)
+			interceptRoute.POST("/live/events/:id/decision", controller.DecideLiveInterceptEvent)
+			interceptRoute.GET("/:id", controller.GetInterceptRule)
+			interceptRoute.POST("/", controller.CreateInterceptRule)
+			interceptRoute.PUT("/:id", controller.UpdateInterceptRule)
+			interceptRoute.DELETE("/:id", controller.DeleteInterceptRule)
+		}
+
 		logRoute := apiRouter.Group("/log")
 		logRoute.GET("/", middleware.AdminAuth(), controller.GetAllLogs)
 		logRoute.DELETE("/", middleware.AdminAuth(), controller.DeleteHistoryLogs)

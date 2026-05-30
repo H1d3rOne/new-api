@@ -24,6 +24,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SectionPageLayout } from '@/components/layout'
 import type { NavGroup } from '@/components/layout/types'
 import { CacheStatsDialog } from '@/features/system-settings/general/channel-affinity/cache-stats-dialog'
+import { TrafficManagement } from '@/features/traffic-management'
 import { UserInfoDialog } from './components/dialogs/user-info-dialog'
 import {
   UsageLogsProvider,
@@ -49,6 +50,15 @@ const SECTION_META: Record<UsageLogsSectionId, { titleKey: string }> = {
   task: {
     titleKey: 'Task Logs',
   },
+  traffic: {
+    titleKey: 'Traffic Management',
+  },
+}
+
+function isTaskLogSection(
+  section: UsageLogsSectionId
+): section is (typeof TASK_LOG_SECTIONS)[number] {
+  return (TASK_LOG_SECTIONS as readonly UsageLogsSectionId[]).includes(section)
 }
 
 function UsageLogsContent() {
@@ -103,10 +113,15 @@ function UsageLogsContent() {
     [navigate]
   )
 
-  const pageMeta =
-    activeCategory === 'common' ? SECTION_META.common : SECTION_META.task
+  const pageMeta = SECTION_META[activeCategory]
   const showTaskSwitcher =
-    activeCategory !== 'common' && visibleSections.length > 1
+    isTaskLogSection(activeCategory) && visibleSections.length > 1
+  const content =
+    activeCategory === 'traffic' ? (
+      <TrafficManagement />
+    ) : (
+      <UsageLogsTable logCategory={activeCategory} />
+    )
 
   return (
     <>
@@ -127,9 +142,7 @@ function UsageLogsContent() {
                 </TabsList>
               </Tabs>
             )}
-            <div className='min-h-0 flex-1'>
-              <UsageLogsTable logCategory={activeCategory} />
-            </div>
+            <div className='min-h-0 flex-1'>{content}</div>
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>

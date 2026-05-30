@@ -254,6 +254,7 @@ func migrateDB() error {
 	if err := migrateTokenModelLimitsToText(); err != nil {
 		return err
 	}
+	requestMatchColumnMissing, responseMatchColumnMissing := trafficInterceptRuleMatchColumnsMissing()
 
 	err := DB.AutoMigrate(
 		&Channel{},
@@ -264,6 +265,7 @@ func migrateDB() error {
 		&Redemption{},
 		&Ability{},
 		&Log{},
+		&TrafficLog{},
 		&Midjourney{},
 		&TopUp{},
 		&QuotaData{},
@@ -281,6 +283,7 @@ func migrateDB() error {
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
+		&TrafficInterceptRule{},
 	)
 	if err != nil {
 		return err
@@ -294,10 +297,14 @@ func migrateDB() error {
 			return err
 		}
 	}
+	if err := backfillTrafficInterceptRuleMatchSwitches(requestMatchColumnMissing, responseMatchColumnMissing); err != nil {
+		return err
+	}
 	return nil
 }
 
 func migrateDBFast() error {
+	requestMatchColumnMissing, responseMatchColumnMissing := trafficInterceptRuleMatchColumnsMissing()
 
 	var wg sync.WaitGroup
 
@@ -313,6 +320,7 @@ func migrateDBFast() error {
 		{&Redemption{}, "Redemption"},
 		{&Ability{}, "Ability"},
 		{&Log{}, "Log"},
+		{&TrafficLog{}, "TrafficLog"},
 		{&Midjourney{}, "Midjourney"},
 		{&TopUp{}, "TopUp"},
 		{&QuotaData{}, "QuotaData"},
@@ -330,6 +338,7 @@ func migrateDBFast() error {
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
 		{&PerfMetric{}, "PerfMetric"},
+		{&TrafficInterceptRule{}, "TrafficInterceptRule"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))
@@ -363,13 +372,62 @@ func migrateDBFast() error {
 			return err
 		}
 	}
+	if err := backfillTrafficInterceptRuleMatchSwitches(requestMatchColumnMissing, responseMatchColumnMissing); err != nil {
+		return err
+	}
 	common.SysLog("database migrated")
+	return nil
+}
+
+func trafficInterceptRuleMatchColumnsMissing() (bool, bool) {
+	if DB == nil || !DB.Migrator().HasTable(&TrafficInterceptRule{}) {
+		return false, false
+	}
+	return !DB.Migrator().HasColumn(&TrafficInterceptRule{}, "request_match_enabled"),
+		!DB.Migrator().HasColumn(&TrafficInterceptRule{}, "response_match_enabled")
+}
+
+func backfillTrafficInterceptRuleMatchSwitches(requestMissing bool, responseMissing bool) error {
+	if DB == nil {
+		return nil
+	}
+	if requestMissing {
+		tx := DB.Model(&TrafficInterceptRule{}).
+			Where("request_match_enabled = ?", false).
+			Where(DB.Where("user_id <> ?", 0).
+				Or("username <> ?", "").
+				Or("path_pattern <> ?", "").
+				Or("method <> ?", "").
+				Or("model_pattern <> ?", "").
+				Or("request_content_match <> ?", "").
+				Or("condition_expr <> ?", "")).
+			Update("request_match_enabled", true)
+		if tx.Error != nil {
+			return tx.Error
+		}
+	}
+	if responseMissing {
+		tx := DB.Model(&TrafficInterceptRule{}).
+			Where("response_match_enabled = ?", false).
+			Where(DB.Where("response_user_id <> ?", 0).
+				Or("response_username <> ?", "").
+				Or("response_path_pattern <> ?", "").
+				Or("response_method <> ?", "").
+				Or("response_model_pattern <> ?", "").
+				Or("response_content_match <> ?", "").
+				Or("response_tool_calls_match <> ?", "").
+				Or("response_condition_expr <> ?", "")).
+			Update("response_match_enabled", true)
+		if tx.Error != nil {
+			return tx.Error
+		}
+	}
 	return nil
 }
 
 func migrateLOGDB() error {
 	var err error
-	if err = LOG_DB.AutoMigrate(&Log{}); err != nil {
+	if err = LOG_DB.AutoMigrate(&Log{}, &TrafficLog{}); err != nil {
 		return err
 	}
 	return nil

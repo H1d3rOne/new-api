@@ -142,6 +142,10 @@ export function SidebarModulesSection({
         title: t('Users'),
         description: t('Administer user accounts and roles.'),
       },
+      traffic: {
+        title: t('Traffic Management'),
+        description: t('Inspect relay traffic and configure interception rules.'),
+      },
       setting: {
         title: t('System settings'),
         description: t('Advanced platform configuration.'),

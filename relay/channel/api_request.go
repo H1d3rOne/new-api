@@ -514,6 +514,10 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
+	if err := service.ApplyTrafficUpstreamRequestInterceptor(c, req, info); err != nil {
+		return nil, fmt.Errorf("traffic request interceptor failed: %w", err)
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())
@@ -525,6 +529,14 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
 		c.Set(common2.UpstreamRequestIdKey, upID)
+	}
+
+	if err := service.ApplyTrafficLiveResponseInterceptor(c, req, resp, info); err != nil {
+		return nil, fmt.Errorf("traffic live response interceptor failed: %w", err)
+	}
+
+	if err := service.ApplyTrafficUpstreamResponseInterceptor(c, req, resp, info); err != nil {
+		return nil, fmt.Errorf("traffic response interceptor failed: %w", err)
 	}
 
 	_ = req.Body.Close()

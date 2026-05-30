@@ -113,6 +113,9 @@ var DebugEnabled bool
 var MemoryCacheEnabled bool
 
 var LogConsumeEnabled = true
+var TrafficLogEnabled = true
+var TrafficLogMaxBodyBytes = 64 * 1024
+var TrafficInterceptEnabled = false
 
 var TLSInsecureSkipVerify bool
 var InsecureTLSConfig = &tls.Config{InsecureSkipVerify: true}

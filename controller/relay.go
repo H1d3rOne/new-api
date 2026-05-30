@@ -94,12 +94,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
 			case types.RelayFormatClaude:
-				c.JSON(newAPIError.StatusCode, gin.H{
+				writeRelayJSONResponse(c, newAPIError.StatusCode, gin.H{
 					"type":  "error",
 					"error": newAPIError.ToClaudeError(),
 				})
 			default:
-				c.JSON(newAPIError.StatusCode, gin.H{
+				writeRelayJSONResponse(c, newAPIError.StatusCode, gin.H{
 					"error": newAPIError.ToOpenAIError(),
 				})
 			}
@@ -246,6 +246,34 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
 	}
+}
+
+func writeRelayJSONResponse(c *gin.Context, statusCode int, payload gin.H) {
+	data, err := common.Marshal(payload)
+	if err != nil {
+		c.JSON(statusCode, payload)
+		return
+	}
+	headers := http.Header{}
+	headers.Set("Content-Type", "application/json")
+	statusCode, headers, body, intercepted := service.ApplyTrafficLiveGeneratedResponseInterceptor(c, statusCode, headers, string(data))
+	if !intercepted {
+		c.Data(statusCode, "application/json", data)
+		return
+	}
+	contentType := headers.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	for key, values := range headers {
+		if strings.EqualFold(key, "Content-Type") {
+			continue
+		}
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+	c.Data(statusCode, contentType, []byte(body))
 }
 
 var upgrader = websocket.Upgrader{

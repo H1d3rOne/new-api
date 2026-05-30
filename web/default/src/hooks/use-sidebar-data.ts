@@ -20,6 +20,7 @@ import {
   Activity,
   Box,
   CreditCard,
+  FileSearch,
   FileText,
   FlaskConical,
   Key,
@@ -130,6 +131,11 @@ export function useSidebarData(): SidebarData {
             title: t('Users'),
             url: '/users',
             icon: Users,
+          },
+          {
+            title: t('Traffic Management'),
+            url: '/usage-logs/traffic',
+            icon: FileSearch,
           },
           {
             title: t('Redemption Codes'),

@@ -118,11 +118,13 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	var usage = &dto.Usage{}
 	var lastStreamData string
 	var secondLastStreamData string // 存储倒数第二个stream data，用于音频模型
+	trafficRewriteContent, trafficRewriteContentEnabled := service.GetTrafficInterceptStreamContentRewrite(c)
+	var trafficRewriteState openAIStreamContentRewriteState
 
 	// 检查是否为音频模型
 	isAudioModel := strings.Contains(strings.ToLower(model), "audio")
 
-	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+	handleStreamData := func(data string, sr *helper.StreamResult) {
 		if lastStreamData != "" {
 			if err := HandleStreamFormat(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent); err != nil {
 				common.SysLog("error handling stream format: " + err.Error())
@@ -141,6 +143,16 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 				sr.Error(err)
 			}
 		}
+	}
+
+	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if trafficRewriteContentEnabled {
+			for _, rewrittenData := range rewriteOpenAIStreamContentData(data, trafficRewriteContent, &trafficRewriteState) {
+				handleStreamData(rewrittenData, sr)
+			}
+			return
+		}
+		handleStreamData(data, sr)
 	})
 
 	// 对音频模型，从倒数第二个stream data中提取usage信息
@@ -184,6 +196,171 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
 	return usage, nil
+}
+
+type openAIStreamContentRewriteState struct {
+	Sent     bool
+	SeenRole bool
+}
+
+func rewriteOpenAIStreamContentData(data string, content string, state *openAIStreamContentRewriteState) []string {
+	var streamResponse dto.ChatCompletionsStreamResponse
+	if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
+		return []string{data}
+	}
+	if state == nil {
+		state = &openAIStreamContentRewriteState{}
+	}
+
+	out := make([]string, 0, 3)
+	hasContent := openAIStreamResponseHasContent(&streamResponse)
+	stripped := stripOpenAIStreamContent(&streamResponse)
+	if openAIStreamResponseHasRole(stripped) {
+		state.SeenRole = true
+	}
+	if !state.Sent && openAIStreamResponseIsTerminal(stripped) {
+		out = appendOpenAIStreamContentRewrite(out, &streamResponse, content, state, data)
+	}
+	if openAIStreamResponseHasOutput(stripped) {
+		out = append(out, marshalOpenAIStreamResponse(stripped, data))
+	}
+	if !state.Sent && hasContent {
+		out = appendOpenAIStreamContentRewrite(out, &streamResponse, content, state, data)
+	}
+	return out
+}
+
+func appendOpenAIStreamContentRewrite(out []string, template *dto.ChatCompletionsStreamResponse, content string, state *openAIStreamContentRewriteState, fallback string) []string {
+	if state == nil || state.Sent {
+		return out
+	}
+	if !state.SeenRole {
+		out = append(out, marshalOpenAIStreamResponse(openAIStreamStartContentRewriteResponse(template), fallback))
+		state.SeenRole = true
+	}
+	out = append(out, marshalOpenAIStreamResponse(openAIStreamContentRewriteResponse(template, content), fallback))
+	state.Sent = true
+	return out
+}
+
+func openAIStreamStartContentRewriteResponse(template *dto.ChatCompletionsStreamResponse) *dto.ChatCompletionsStreamResponse {
+	content := ""
+	return &dto.ChatCompletionsStreamResponse{
+		Id:                template.Id,
+		Object:            template.Object,
+		Created:           template.Created,
+		Model:             template.Model,
+		SystemFingerprint: template.SystemFingerprint,
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Index: openAIStreamFirstChoiceIndex(template),
+				Delta: dto.ChatCompletionsStreamResponseChoiceDelta{
+					Role:    "assistant",
+					Content: &content,
+				},
+			},
+		},
+	}
+}
+
+func openAIStreamContentRewriteResponse(template *dto.ChatCompletionsStreamResponse, content string) *dto.ChatCompletionsStreamResponse {
+	response := &dto.ChatCompletionsStreamResponse{
+		Id:                template.Id,
+		Object:            template.Object,
+		Created:           template.Created,
+		Model:             template.Model,
+		SystemFingerprint: template.SystemFingerprint,
+		Choices: []dto.ChatCompletionsStreamResponseChoice{
+			{
+				Index: openAIStreamFirstChoiceIndex(template),
+			},
+		},
+	}
+	response.Choices[0].Delta.SetContentString(content)
+	return response
+}
+
+func openAIStreamFirstChoiceIndex(response *dto.ChatCompletionsStreamResponse) int {
+	if response != nil && len(response.Choices) > 0 {
+		return response.Choices[0].Index
+	}
+	return 0
+}
+
+func stripOpenAIStreamContent(response *dto.ChatCompletionsStreamResponse) *dto.ChatCompletionsStreamResponse {
+	stripped := response.Copy()
+	for index := range stripped.Choices {
+		stripped.Choices[index].Delta.Content = nil
+	}
+	return stripped
+}
+
+func openAIStreamResponseHasContent(response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		if choice.Delta.GetContentString() != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIStreamResponseHasRole(response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	for _, choice := range response.Choices {
+		if choice.Delta.Role != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIStreamResponseIsTerminal(response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	if response.Usage != nil {
+		return true
+	}
+	for _, choice := range response.Choices {
+		if choice.FinishReason != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIStreamResponseHasOutput(response *dto.ChatCompletionsStreamResponse) bool {
+	if response == nil {
+		return false
+	}
+	if response.Usage != nil {
+		return true
+	}
+	for _, choice := range response.Choices {
+		if choice.FinishReason != nil || choice.Logprobs != nil {
+			return true
+		}
+		if choice.Delta.Role != "" ||
+			choice.Delta.GetContentString() != "" ||
+			choice.Delta.GetReasoningContent() != "" ||
+			len(choice.Delta.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func marshalOpenAIStreamResponse(response *dto.ChatCompletionsStreamResponse, fallback string) string {
+	data, err := common.Marshal(response)
+	if err != nil {
+		return fallback
+	}
+	return string(data)
 }
 
 func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

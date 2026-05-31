@@ -70,21 +70,24 @@ interface InterceptRuleDialogProps {
   onSaved: () => void
 }
 
-const SCRIPT_TEMPLATE = `async function onRequest(context, request) {
-  if (request.body && request.headers["content-type"] && request.headers["content-type"].includes("application/json")) {
-    try {
-      var body = JSON.parse(request.body)
-      if (body.client_metadata) {
-        delete body.client_metadata
-        request.body = JSON.stringify(body)
-        request.headers["content-length"] = String(request.body.length)
-      }
-    } catch (e) {}
-  }
+const SCRIPT_TEMPLATE = `// e.g. Add/Update/Remove: Queries, Headers, Body
+async function onRequest(context, request) {
+  console.log(request.url);
+  // Update or add Header
+  // request.headers["X-New-Headers"] = "My-Value";
+
+  // Update Body use fetch API request，具体文档可网上搜索 fetch API
+  // request.body = await fetch('https://www.baidu.com/').then(response => response.text());
   return request
 }
 
+// You can modify the Response Data here before it goes to the client
 async function onResponse(context, request, response) {
+  // response.statusCode = 200;
+
+  // var body = JSON.parse(response.body);
+  // body['key'] = "value";
+  // response.body = JSON.stringify(body);
   return response
 }`
 

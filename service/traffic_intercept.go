@@ -1218,6 +1218,7 @@ func trafficInterceptScriptResponseObject(ctx *TrafficInterceptResponseContext) 
 	return map[string]interface{}{
 		"url":          ctx.URL,
 		"status":       ctx.Status,
+		"statusCode":   ctx.Status,
 		"content_type": ctx.ContentType,
 		"headers":      trafficInterceptScriptHeaders(ctx.Header),
 		"body":         ctx.Body,
@@ -1306,6 +1307,9 @@ func applyTrafficInterceptScriptResponse(req *http.Request, resp *http.Response,
 		return
 	}
 	if status, ok := input["status"]; ok {
+		ctx.Status = anyToInt(status, ctx.Status)
+	}
+	if status, ok := input["statusCode"]; ok {
 		ctx.Status = anyToInt(status, ctx.Status)
 	}
 	if rawURL, ok := trafficInterceptMapString(input, "url"); ok {

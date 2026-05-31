@@ -70,6 +70,24 @@ interface InterceptRuleDialogProps {
   onSaved: () => void
 }
 
+const SCRIPT_TEMPLATE = `async function onRequest(context, request) {
+  if (request.body && request.headers["content-type"] && request.headers["content-type"].includes("application/json")) {
+    try {
+      var body = JSON.parse(request.body)
+      if (body.client_metadata) {
+        delete body.client_metadata
+        request.body = JSON.stringify(body)
+        request.headers["content-length"] = String(request.body.length)
+      }
+    } catch (e) {}
+  }
+  return request
+}
+
+async function onResponse(context, request, response) {
+  return response
+}`
+
 const EMPTY_RULE: Partial<InterceptRule> = {
   name: '',
   description: '',
@@ -116,7 +134,7 @@ const EMPTY_RULE: Partial<InterceptRule> = {
   response_status_rewrite: '',
   response_url_rewrite: '',
   response_script: '',
-  script: '',
+  script: SCRIPT_TEMPLATE,
 }
 
 const ALL_METHODS_VALUE = '__all__'
@@ -132,24 +150,6 @@ const MESSAGE_CONTENT_MODES: MessageContentRewrite['mode'][] = [
   'first',
   'all',
 ]
-const SCRIPT_PLACEHOLDER = `async function onRequest(context, request) {
-  if (request.body && request.headers["content-type"] && request.headers["content-type"].includes("application/json")) {
-    try {
-      var body = JSON.parse(request.body)
-      if (body.client_metadata) {
-        delete body.client_metadata
-        request.body = JSON.stringify(body)
-        request.headers["content-length"] = String(request.body.length)
-      }
-    } catch (e) {}
-  }
-  return request
-}
-
-async function onResponse(context, request, response) {
-  return response
-}`
-
 function exprString(value: string): string {
   return JSON.stringify(value ?? '')
 }
@@ -205,6 +205,9 @@ function createInitialRuleForm(
   }
   if (rule && rule.response_match_enabled === undefined) {
     form.response_match_enabled = hasResponseMatchFields(form)
+  }
+  if (!form.script?.trim()) {
+    form.script = SCRIPT_TEMPLATE
   }
   return form
 }
@@ -1462,24 +1465,28 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
                   <Checkbox
                     id='script_enabled'
                     checked={scriptEnabled}
-                    onCheckedChange={(checked) =>
-                      updateField('script_enabled', Boolean(checked))
-                    }
+                    onCheckedChange={(checked) => {
+                      const enabled = Boolean(checked)
+                      setForm((prev) => ({
+                        ...prev,
+                        script_enabled: enabled,
+                        script: prev.script?.trim()
+                          ? prev.script
+                          : SCRIPT_TEMPLATE,
+                      }))
+                    }}
                   />
                   <Label htmlFor='script_enabled'>{t('Script Rewrite')}</Label>
                 </div>
-                <div
-                  className={cn('space-y-2', !scriptEnabled && 'opacity-60')}
-                >
+                <div className='space-y-2'>
                   <Label htmlFor='script'>{t('Script')}</Label>
                   <Textarea
                     id='script'
-                    value={form.script || ''}
+                    value={form.script || SCRIPT_TEMPLATE}
                     onChange={(e) => updateField('script', e.target.value)}
-                    placeholder={SCRIPT_PLACEHOLDER}
+                    placeholder={SCRIPT_TEMPLATE}
                     rows={18}
                     className='font-mono text-sm'
-                    disabled={!scriptEnabled}
                   />
                   <p className='text-muted-foreground text-xs'>
                     {t(

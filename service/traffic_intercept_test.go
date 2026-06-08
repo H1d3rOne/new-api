@@ -240,41 +240,46 @@ func TestTrafficInterceptResponseMatchOp(t *testing.T) {
 	}
 }
 
-func TestMatchTrafficInterceptResponseBaseUsesRequestMatchWhenConfigured(t *testing.T) {
-	responseOnly := &trafficInterceptCachedRule{
-		Rule: &model.TrafficInterceptRule{
-			ResponseMatchEnabled: true,
-			ResponsePathPattern:  "^/response-only$",
-		},
-	}
-	responseOnly.responsePathRegex = regexp.MustCompile(responseOnly.Rule.ResponsePathPattern)
-
-	if !matchTrafficInterceptResponseCandidateRule(responseOnly, &TrafficInterceptRequestContext{Path: "/response-only"}) {
-		t.Fatal("expected response base fields to match response candidate")
-	}
-
+func TestMatchTrafficInterceptCommonBaseGatesRequestAndResponse(t *testing.T) {
 	cr := &trafficInterceptCachedRule{
 		Rule: &model.TrafficInterceptRule{
-			RequestMatchEnabled:  true,
-			ResponseMatchEnabled: true,
-			PathPattern:          "^/request-only$",
-			ResponsePathPattern:  "^/response-only$",
+			PathPattern: "^/shared$",
+			Method:      http.MethodPost,
+			UserId:      7,
 		},
+		pathRegex: regexp.MustCompile("^/shared$"),
 	}
-	cr.pathRegex = regexp.MustCompile(cr.Rule.PathPattern)
-	cr.responsePathRegex = regexp.MustCompile(cr.Rule.ResponsePathPattern)
+	matchingReq := &TrafficInterceptRequestContext{Path: "/shared", Method: http.MethodPost, UserId: 7}
 
-	if !matchTrafficInterceptRequestRule(cr, &TrafficInterceptRequestContext{Path: "/request-only"}) {
-		t.Fatal("expected request base fields to match request rule")
+	if !matchTrafficInterceptRequestRule(cr, matchingReq) {
+		t.Fatal("expected shared basic fields to match request rule")
 	}
-	if matchTrafficInterceptRequestRule(cr, &TrafficInterceptRequestContext{Path: "/response-only"}) {
-		t.Fatal("response base fields should not affect request rule")
+	if !matchTrafficInterceptResponseCandidateRule(cr, matchingReq) {
+		t.Fatal("expected shared basic fields to match response candidate")
 	}
-	if !matchTrafficInterceptResponseCandidateRule(cr, &TrafficInterceptRequestContext{Path: "/request-only", URL: "/response-only"}) {
-		t.Fatal("expected response candidate to match when both request and response base fields match")
+	if matchTrafficInterceptRequestRule(cr, &TrafficInterceptRequestContext{Path: "/other", Method: http.MethodPost, UserId: 7}) {
+		t.Fatal("expected shared path pattern to gate request rule")
 	}
-	if matchTrafficInterceptResponseCandidateRule(cr, &TrafficInterceptRequestContext{Path: "/response-only"}) {
-		t.Fatal("request base fields should gate response candidate when configured")
+	if matchTrafficInterceptResponseCandidateRule(cr, &TrafficInterceptRequestContext{Path: "/shared", Method: http.MethodGet, UserId: 7}) {
+		t.Fatal("expected shared method to gate response candidate")
+	}
+	if matchTrafficInterceptResponseCandidateRule(cr, &TrafficInterceptRequestContext{Path: "/shared", Method: http.MethodPost, UserId: 8}) {
+		t.Fatal("expected shared user id to gate response candidate")
+	}
+
+	legacy := &trafficInterceptCachedRule{
+		Rule: &model.TrafficInterceptRule{
+			ResponseUserId:      9,
+			ResponsePathPattern: "^/legacy-response$",
+			ResponseMethod:      http.MethodPost,
+		},
+		pathRegex: regexp.MustCompile("^/legacy-response$"),
+	}
+	if !matchTrafficInterceptResponseCandidateRule(legacy, &TrafficInterceptRequestContext{Path: "/legacy-response", Method: http.MethodPost, UserId: 9}) {
+		t.Fatal("expected legacy response basic fields to be treated as shared basic fields")
+	}
+	if matchTrafficInterceptResponseCandidateRule(legacy, &TrafficInterceptRequestContext{Path: "/other", Method: http.MethodPost, UserId: 9}) {
+		t.Fatal("expected legacy response path fallback to gate response candidate")
 	}
 }
 
@@ -288,8 +293,11 @@ func TestTrafficInterceptMatchSwitchSemantics(t *testing.T) {
 		},
 		pathRegex: regexp.MustCompile("^/only-this-path$"),
 	}
-	if !matchTrafficInterceptRequestRule(requestGlobal, &TrafficInterceptRequestContext{Path: "/other", Body: `{"messages":[]}`}) {
-		t.Fatal("expected disabled request match to pass without evaluating stale match fields")
+	if matchTrafficInterceptRequestRule(requestGlobal, &TrafficInterceptRequestContext{Path: "/other", Body: `{"messages":[]}`}) {
+		t.Fatal("expected shared basic path to gate request even when request match is disabled")
+	}
+	if !matchTrafficInterceptRequestRule(requestGlobal, &TrafficInterceptRequestContext{Path: "/only-this-path", Body: `{"messages":[]}`}) {
+		t.Fatal("expected disabled request match to ignore stale request body condition after shared basic match")
 	}
 
 	requestMatched := &trafficInterceptCachedRule{

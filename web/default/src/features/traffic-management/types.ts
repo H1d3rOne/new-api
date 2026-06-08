@@ -117,9 +117,11 @@ export interface InterceptRule {
   user_id: number
   username: string
 
-  // Request matching conditions
+  // Basic matching conditions shared by request, response, and script actions
   path_pattern: string
   method: string
+
+  // Request matching conditions
   model_pattern: string
   request_content_match: string
   request_message_matches: string

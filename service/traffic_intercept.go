@@ -34,7 +34,6 @@ type trafficInterceptCachedRule struct {
 	Rule               *model.TrafficInterceptRule
 	pathRegex          *regexp.Regexp
 	modelRegex         *regexp.Regexp
-	responsePathRegex  *regexp.Regexp
 	responseModelRegex *regexp.Regexp
 }
 
@@ -137,8 +136,8 @@ func loadTrafficInterceptRules() []*trafficInterceptCachedRule {
 	for _, rule := range enabledRules {
 		cr := &trafficInterceptCachedRule{Rule: rule}
 
-		if strings.TrimSpace(rule.PathPattern) != "" {
-			re, err := regexp.Compile(rule.PathPattern)
+		if pattern := trafficInterceptCommonPathPattern(rule); pattern != "" {
+			re, err := regexp.Compile(pattern)
 			if err != nil {
 				common.SysLog(fmt.Sprintf("traffic intercept rule %d: invalid path_pattern regex: %v", rule.Id, err))
 			} else {
@@ -152,15 +151,6 @@ func loadTrafficInterceptRules() []*trafficInterceptCachedRule {
 				common.SysLog(fmt.Sprintf("traffic intercept rule %d: invalid model_pattern regex: %v", rule.Id, err))
 			} else {
 				cr.modelRegex = re
-			}
-		}
-
-		if strings.TrimSpace(rule.ResponsePathPattern) != "" {
-			re, err := regexp.Compile(rule.ResponsePathPattern)
-			if err != nil {
-				common.SysLog(fmt.Sprintf("traffic intercept rule %d: invalid response_path_pattern regex: %v", rule.Id, err))
-			} else {
-				cr.responsePathRegex = re
 			}
 		}
 
@@ -665,10 +655,7 @@ func matchTrafficInterceptRequestRule(cr *trafficInterceptCachedRule, reqCtx *Tr
 	if cr == nil || cr.Rule == nil || reqCtx == nil {
 		return false
 	}
-	if !trafficInterceptRuleHasRequestMatch(cr) {
-		return true
-	}
-	if !matchTrafficInterceptRequestBaseRule(cr, reqCtx) {
+	if !matchTrafficInterceptBasicRule(cr, reqCtx) {
 		return false
 	}
 	return matchTrafficInterceptRequestCondition(cr, reqCtx)
@@ -678,34 +665,42 @@ func matchTrafficInterceptResponseCandidateRule(cr *trafficInterceptCachedRule, 
 	if cr == nil || cr.Rule == nil {
 		return false
 	}
+	if !matchTrafficInterceptBasicRule(cr, reqCtx) {
+		return false
+	}
 	if trafficInterceptRuleHasRequestMatch(cr) {
-		if !matchTrafficInterceptRequestRule(cr, reqCtx) {
+		if !matchTrafficInterceptRequestCondition(cr, reqCtx) {
 			return false
 		}
 	}
 	if trafficInterceptRuleHasResponseMatch(cr) {
-		return matchTrafficInterceptResponseBaseRule(cr, reqCtx)
+		return matchTrafficInterceptResponseModelRule(cr, reqCtx)
 	}
 	return true
 }
 
-func matchTrafficInterceptRequestBaseRule(cr *trafficInterceptCachedRule, reqCtx *TrafficInterceptRequestContext) bool {
+func matchTrafficInterceptBasicRule(cr *trafficInterceptCachedRule, reqCtx *TrafficInterceptRequestContext) bool {
 	if cr == nil || cr.Rule == nil || reqCtx == nil {
 		return false
 	}
 	rule := cr.Rule
-	return matchTrafficInterceptBaseFields(reqCtx, rule.UserId, rule.Username, cr.pathRegex, rule.Method, cr.modelRegex)
+	return matchTrafficInterceptBaseFields(
+		reqCtx,
+		trafficInterceptCommonUserId(rule),
+		trafficInterceptCommonUsername(rule),
+		cr.pathRegex,
+		trafficInterceptCommonMethod(rule),
+	)
 }
 
-func matchTrafficInterceptResponseBaseRule(cr *trafficInterceptCachedRule, reqCtx *TrafficInterceptRequestContext) bool {
+func matchTrafficInterceptResponseModelRule(cr *trafficInterceptCachedRule, reqCtx *TrafficInterceptRequestContext) bool {
 	if cr == nil || cr.Rule == nil || reqCtx == nil {
 		return false
 	}
-	rule := cr.Rule
-	return matchTrafficInterceptBaseFields(reqCtx, rule.ResponseUserId, rule.ResponseUsername, cr.responsePathRegex, rule.ResponseMethod, cr.responseModelRegex)
+	return matchTrafficInterceptModelField(reqCtx, cr.responseModelRegex)
 }
 
-func matchTrafficInterceptBaseFields(reqCtx *TrafficInterceptRequestContext, userId int, username string, pathRegex *regexp.Regexp, method string, modelRegex *regexp.Regexp) bool {
+func matchTrafficInterceptBaseFields(reqCtx *TrafficInterceptRequestContext, userId int, username string, pathRegex *regexp.Regexp, method string) bool {
 	if reqCtx == nil {
 		return false
 	}
@@ -722,10 +717,54 @@ func matchTrafficInterceptBaseFields(reqCtx *TrafficInterceptRequestContext, use
 	if strings.TrimSpace(method) != "" && !strings.EqualFold(method, reqCtx.Method) {
 		return false
 	}
-	if modelRegex != nil && !modelRegex.MatchString(reqCtx.Model) {
+	return true
+}
+
+func matchTrafficInterceptModelField(reqCtx *TrafficInterceptRequestContext, modelRegex *regexp.Regexp) bool {
+	if reqCtx == nil {
 		return false
 	}
-	return true
+	return modelRegex == nil || modelRegex.MatchString(reqCtx.Model)
+}
+
+func trafficInterceptCommonUserId(rule *model.TrafficInterceptRule) int {
+	if rule == nil {
+		return 0
+	}
+	if rule.UserId != 0 {
+		return rule.UserId
+	}
+	return rule.ResponseUserId
+}
+
+func trafficInterceptCommonUsername(rule *model.TrafficInterceptRule) string {
+	if rule == nil {
+		return ""
+	}
+	if strings.TrimSpace(rule.Username) != "" {
+		return rule.Username
+	}
+	return rule.ResponseUsername
+}
+
+func trafficInterceptCommonPathPattern(rule *model.TrafficInterceptRule) string {
+	if rule == nil {
+		return ""
+	}
+	if pattern := strings.TrimSpace(rule.PathPattern); pattern != "" {
+		return pattern
+	}
+	return strings.TrimSpace(rule.ResponsePathPattern)
+}
+
+func trafficInterceptCommonMethod(rule *model.TrafficInterceptRule) string {
+	if rule == nil {
+		return ""
+	}
+	if method := strings.TrimSpace(rule.Method); method != "" {
+		return method
+	}
+	return strings.TrimSpace(rule.ResponseMethod)
 }
 
 func trafficInterceptRuleHasRequestMatch(cr *trafficInterceptCachedRule) bool {
@@ -750,6 +789,9 @@ func matchTrafficInterceptRequestCondition(cr *trafficInterceptCachedRule, reqCt
 		return true
 	}
 	rule := cr.Rule
+	if !matchTrafficInterceptModelField(reqCtx, cr.modelRegex) {
+		return false
+	}
 	if trafficInterceptHasConfiguredJSONArray(rule.RequestMessageMatches) {
 		return trafficInterceptRequestMessageMatches(reqCtx.Body, rule.RequestMessageMatches, rule.RequestMessageMatchOp)
 	}
@@ -763,10 +805,10 @@ func matchTrafficInterceptResponseCondition(cr *trafficInterceptCachedRule, reqC
 	if cr == nil || cr.Rule == nil || reqCtx == nil || respCtx == nil {
 		return false
 	}
-	rule := cr.Rule
-	if trafficInterceptRuleHasRequestMatch(cr) && !matchTrafficInterceptRequestCondition(cr, reqCtx) {
+	if !matchTrafficInterceptResponseCandidateRule(cr, reqCtx) {
 		return false
 	}
+	rule := cr.Rule
 	if trafficInterceptRuleHasResponseMatch(cr) {
 		if !trafficInterceptResponseMatches(respCtx.Body, rule.ResponseContentMatch, rule.ResponseToolCallsMatch, rule.ResponseMatchOp) {
 			return false
@@ -1242,7 +1284,7 @@ func trafficInterceptLooksLikeScriptRequest(input map[string]interface{}) bool {
 }
 
 func trafficInterceptLooksLikeScriptResponse(input map[string]interface{}) bool {
-	return trafficInterceptHasAnyKey(input, "url", "status", "content_type", "headers", "body")
+	return trafficInterceptHasAnyKey(input, "url", "status", "statusCode", "content_type", "headers", "body")
 }
 
 func trafficInterceptHasAnyKey(input map[string]interface{}, keys ...string) bool {
@@ -1306,11 +1348,21 @@ func applyTrafficInterceptScriptResponse(req *http.Request, resp *http.Response,
 	if ctx == nil || len(input) == 0 {
 		return
 	}
-	if status, ok := input["status"]; ok {
-		ctx.Status = anyToInt(status, ctx.Status)
-	}
-	if status, ok := input["statusCode"]; ok {
-		ctx.Status = anyToInt(status, ctx.Status)
+	originalStatus := ctx.Status
+	if status, hasStatus := input["status"]; hasStatus {
+		statusValue := anyToInt(status, originalStatus)
+		if statusCode, hasStatusCode := input["statusCode"]; hasStatusCode {
+			statusCodeValue := anyToInt(statusCode, originalStatus)
+			if statusValue != originalStatus {
+				ctx.Status = statusValue
+			} else {
+				ctx.Status = statusCodeValue
+			}
+		} else {
+			ctx.Status = statusValue
+		}
+	} else if statusCode, ok := input["statusCode"]; ok {
+		ctx.Status = anyToInt(statusCode, ctx.Status)
 	}
 	if rawURL, ok := trafficInterceptMapString(input, "url"); ok {
 		ctx.URL = applyHTTPResponseURL(req, resp, rawURL)

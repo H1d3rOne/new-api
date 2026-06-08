@@ -140,10 +140,10 @@ function buildTrafficRewriteRule(
       : '[]',
     request_message_match_op: 'and',
     condition_expr: '',
-    response_user_id: log.user_id || 0,
-    response_username: log.username || '',
-    response_path_pattern: log.path ? `^${escapeRegExp(log.path)}$` : '',
-    response_method: log.method || '',
+    response_user_id: 0,
+    response_username: '',
+    response_path_pattern: '',
+    response_method: '',
     response_model_pattern: log.model_name
       ? `^${escapeRegExp(log.model_name)}$`
       : '',

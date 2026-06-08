@@ -175,10 +175,6 @@ function hasConfiguredJsonArray(value?: string): boolean {
 
 function hasRequestMatchFields(rule: Partial<InterceptRule>): boolean {
   return Boolean(
-    rule.user_id ||
-    rule.username?.trim() ||
-    rule.path_pattern?.trim() ||
-    rule.method?.trim() ||
     rule.model_pattern?.trim() ||
     rule.request_content_match?.trim() ||
     hasConfiguredJsonArray(rule.request_message_matches) ||
@@ -188,10 +184,6 @@ function hasRequestMatchFields(rule: Partial<InterceptRule>): boolean {
 
 function hasResponseMatchFields(rule: Partial<InterceptRule>): boolean {
   return Boolean(
-    rule.response_user_id ||
-    rule.response_username?.trim() ||
-    rule.response_path_pattern?.trim() ||
-    rule.response_method?.trim() ||
     rule.response_model_pattern?.trim() ||
     rule.response_content_match?.trim() ||
     rule.response_tool_calls_match?.trim() ||
@@ -203,6 +195,18 @@ function createInitialRuleForm(
   rule: Partial<InterceptRule> | null
 ): Partial<InterceptRule> {
   const form = { ...EMPTY_RULE, ...(rule || {}) }
+  if (!form.user_id && form.response_user_id) {
+    form.user_id = form.response_user_id
+  }
+  if (!form.username?.trim() && form.response_username?.trim()) {
+    form.username = form.response_username
+  }
+  if (!form.path_pattern?.trim() && form.response_path_pattern?.trim()) {
+    form.path_pattern = form.response_path_pattern
+  }
+  if (!form.method?.trim() && form.response_method?.trim()) {
+    form.method = form.response_method
+  }
   if (rule && rule.request_match_enabled === undefined) {
     form.request_match_enabled = hasRequestMatchFields(form)
   }
@@ -663,6 +667,10 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
     payload.request_content_match = ''
     payload.request_body_rewrite = ''
     payload.request_url_rewrite = ''
+    payload.response_user_id = 0
+    payload.response_username = ''
+    payload.response_path_pattern = ''
+    payload.response_method = ''
     payload.response_body_rewrite = ''
     payload.request_message_matches = stringifyMessageContentMatches(
       requestMessageMatches.filter((item) => item.content.trim())
@@ -688,32 +696,19 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
     }
   }
 
-  const renderBaseMatchFields = (
-    prefix: string,
-    fields: {
-      method: keyof InterceptRule
-      pathPattern: keyof InterceptRule
-      userId: keyof InterceptRule
-      username: keyof InterceptRule
-      modelPattern: keyof InterceptRule
-    },
-    disabled?: boolean
-  ) => (
-    <>
+  const renderCommonMatchFields = () => (
+    <div className='space-y-4 rounded-md border p-3'>
+      <div className='text-sm font-medium'>{t('Basic Match')}</div>
       <div className='grid gap-4 sm:grid-cols-2'>
         <div className='space-y-2'>
-          <Label htmlFor={`${prefix}_method`}>{t('HTTP Method')}</Label>
+          <Label htmlFor='method'>{t('HTTP Method')}</Label>
           <Select
-            value={String(form[fields.method] || '') || ALL_METHODS_VALUE}
-            disabled={disabled}
+            value={form.method || ALL_METHODS_VALUE}
             onValueChange={(v) =>
-              updateMatchField(
-                fields.method,
-                !v || v === ALL_METHODS_VALUE ? '' : v
-              )
+              updateField('method', !v || v === ALL_METHODS_VALUE ? '' : v)
             }
           >
-            <SelectTrigger id={`${prefix}_method`}>
+            <SelectTrigger id='method'>
               <SelectValue placeholder={t('All methods')} />
             </SelectTrigger>
             <SelectContent>
@@ -729,60 +724,56 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
           </Select>
         </div>
         <div className='space-y-2'>
-          <Label htmlFor={`${prefix}_path_pattern`}>{t('Path Pattern')}</Label>
+          <Label htmlFor='path_pattern'>{t('Path Pattern')}</Label>
           <Input
-            id={`${prefix}_path_pattern`}
-            value={String(form[fields.pathPattern] || '')}
-            onChange={(e) =>
-              updateMatchField(fields.pathPattern, e.target.value)
-            }
+            id='path_pattern'
+            value={form.path_pattern || ''}
+            onChange={(e) => updateField('path_pattern', e.target.value)}
             placeholder={t('Regex pattern, e.g. /v1/chat/.*')}
-            disabled={disabled}
           />
         </div>
       </div>
       <div className='grid gap-4 sm:grid-cols-2'>
         <div className='space-y-2'>
-          <Label htmlFor={`${prefix}_user_id`}>{t('User ID')}</Label>
+          <Label htmlFor='user_id'>{t('User ID')}</Label>
           <Input
-            id={`${prefix}_user_id`}
+            id='user_id'
             type='number'
-            value={
-              Number(form[fields.userId] || 0)
-                ? String(form[fields.userId])
-                : ''
-            }
+            value={Number(form.user_id || 0) ? String(form.user_id) : ''}
             onChange={(e) =>
-              updateMatchField(fields.userId, parseInt(e.target.value) || 0)
+              updateField('user_id', parseInt(e.target.value) || 0)
             }
             placeholder={t('All')}
-            disabled={disabled}
           />
         </div>
         <div className='space-y-2'>
-          <Label htmlFor={`${prefix}_username`}>{t('Username')}</Label>
+          <Label htmlFor='username'>{t('Username')}</Label>
           <Input
-            id={`${prefix}_username`}
-            value={String(form[fields.username] || '')}
-            onChange={(e) => updateMatchField(fields.username, e.target.value)}
+            id='username'
+            value={form.username || ''}
+            onChange={(e) => updateField('username', e.target.value)}
             placeholder={t('All')}
-            disabled={disabled}
           />
         </div>
       </div>
-      <div className='space-y-2'>
-        <Label htmlFor={`${prefix}_model_pattern`}>{t('Model Pattern')}</Label>
-        <Input
-          id={`${prefix}_model_pattern`}
-          value={String(form[fields.modelPattern] || '')}
-          onChange={(e) =>
-            updateMatchField(fields.modelPattern, e.target.value)
-          }
-          placeholder={t('Regex pattern, e.g. gpt-4.*')}
-          disabled={disabled}
-        />
-      </div>
-    </>
+    </div>
+  )
+
+  const renderModelPatternField = (
+    prefix: string,
+    field: keyof InterceptRule,
+    disabled?: boolean
+  ) => (
+    <div className='space-y-2'>
+      <Label htmlFor={`${prefix}_model_pattern`}>{t('Model Pattern')}</Label>
+      <Input
+        id={`${prefix}_model_pattern`}
+        value={String(form[field] || '')}
+        onChange={(e) => updateMatchField(field, e.target.value)}
+        placeholder={t('Regex pattern, e.g. gpt-4.*')}
+        disabled={disabled}
+      />
+    </div>
   )
 
   const renderRequestMatchFields = () => (
@@ -798,15 +789,9 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
         <Label htmlFor='request_match_enabled'>{t('Request Match')}</Label>
       </div>
       <div className={cn('space-y-4', !requestMatchEnabled && 'opacity-60')}>
-        {renderBaseMatchFields(
+        {renderModelPatternField(
           'request_match',
-          {
-            method: 'method',
-            pathPattern: 'path_pattern',
-            userId: 'user_id',
-            username: 'username',
-            modelPattern: 'model_pattern',
-          },
+          'model_pattern',
           !requestMatchEnabled
         )}
         {renderRequestMessageMatchFields()}
@@ -1112,15 +1097,9 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
         <Label htmlFor='response_match_enabled'>{t('Response Match')}</Label>
       </div>
       <div className={cn('space-y-4', !responseMatchEnabled && 'opacity-60')}>
-        {renderBaseMatchFields(
+        {renderModelPatternField(
           'response_match',
-          {
-            method: 'response_method',
-            pathPattern: 'response_path_pattern',
-            userId: 'response_user_id',
-            username: 'response_username',
-            modelPattern: 'response_model_pattern',
-          },
+          'response_model_pattern',
           !responseMatchEnabled
         )}
         <div className='grid gap-3 sm:grid-cols-[220px_1fr]'>
@@ -1288,6 +1267,7 @@ export function InterceptRuleDialog(props: InterceptRuleDialogProps) {
                   </div>
                 </div>
               </div>
+              {renderCommonMatchFields()}
               <div className='space-y-2'>
                 <Label htmlFor='description'>{t('Description')}</Label>
                 <Textarea

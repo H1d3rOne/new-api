@@ -394,11 +394,7 @@ func backfillTrafficInterceptRuleMatchSwitches(requestMissing bool, responseMiss
 	if requestMissing {
 		tx := DB.Model(&TrafficInterceptRule{}).
 			Where("request_match_enabled = ?", false).
-			Where(DB.Where("user_id <> ?", 0).
-				Or("username <> ?", "").
-				Or("path_pattern <> ?", "").
-				Or("method <> ?", "").
-				Or("model_pattern <> ?", "").
+			Where(DB.Where("model_pattern <> ?", "").
 				Or("request_content_match <> ?", "").
 				Or("condition_expr <> ?", "")).
 			Update("request_match_enabled", true)
@@ -409,11 +405,7 @@ func backfillTrafficInterceptRuleMatchSwitches(requestMissing bool, responseMiss
 	if responseMissing {
 		tx := DB.Model(&TrafficInterceptRule{}).
 			Where("response_match_enabled = ?", false).
-			Where(DB.Where("response_user_id <> ?", 0).
-				Or("response_username <> ?", "").
-				Or("response_path_pattern <> ?", "").
-				Or("response_method <> ?", "").
-				Or("response_model_pattern <> ?", "").
+			Where(DB.Where("response_model_pattern <> ?", "").
 				Or("response_content_match <> ?", "").
 				Or("response_tool_calls_match <> ?", "").
 				Or("response_condition_expr <> ?", "")).

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -109,6 +110,7 @@ func CreateInterceptRule(c *gin.Context) {
 	}
 
 	rule.MatchCount = 0
+	normalizeTrafficInterceptCommonMatchFields(&rule)
 
 	if err := rule.Create(); err != nil {
 		common.ApiError(c, err)
@@ -132,6 +134,7 @@ func UpdateInterceptRule(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	normalizeTrafficInterceptCommonMatchFields(existing)
 	resetTrafficInterceptRuleMatchCountForEnabledCycle(existing, wasEnabled)
 
 	if err := existing.Update(); err != nil {
@@ -167,4 +170,26 @@ func resetTrafficInterceptRuleMatchCountForEnabledCycle(rule *model.TrafficInter
 	if !rule.Enabled || (!wasEnabled && rule.Enabled) {
 		rule.MatchCount = 0
 	}
+}
+
+func normalizeTrafficInterceptCommonMatchFields(rule *model.TrafficInterceptRule) {
+	if rule == nil {
+		return
+	}
+	if rule.UserId == 0 && rule.ResponseUserId != 0 {
+		rule.UserId = rule.ResponseUserId
+	}
+	if strings.TrimSpace(rule.Username) == "" && strings.TrimSpace(rule.ResponseUsername) != "" {
+		rule.Username = rule.ResponseUsername
+	}
+	if strings.TrimSpace(rule.PathPattern) == "" && strings.TrimSpace(rule.ResponsePathPattern) != "" {
+		rule.PathPattern = rule.ResponsePathPattern
+	}
+	if strings.TrimSpace(rule.Method) == "" && strings.TrimSpace(rule.ResponseMethod) != "" {
+		rule.Method = rule.ResponseMethod
+	}
+	rule.ResponseUserId = 0
+	rule.ResponseUsername = ""
+	rule.ResponsePathPattern = ""
+	rule.ResponseMethod = ""
 }

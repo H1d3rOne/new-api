@@ -38,9 +38,11 @@ type TrafficInterceptRule struct {
 	UserId      int    `json:"user_id" gorm:"default:0;index"`
 	Username    string `json:"username" gorm:"index;default:''"`
 
+	// Basic matching conditions shared by request, response, and script actions.
+	PathPattern string `json:"path_pattern" gorm:"type:varchar(512);default:''"`
+	Method      string `json:"method" gorm:"type:varchar(16);default:''"`
+
 	// Request matching conditions
-	PathPattern           string `json:"path_pattern" gorm:"type:varchar(512);default:''"`
-	Method                string `json:"method" gorm:"type:varchar(16);default:''"`
 	ModelPattern          string `json:"model_pattern" gorm:"type:varchar(256);default:''"`
 	RequestContentMatch   string `json:"request_content_match" gorm:"type:text"`
 	RequestMessageMatches string `json:"request_message_matches" gorm:"type:text"` // JSON array of MessageContentMatch
@@ -48,6 +50,7 @@ type TrafficInterceptRule struct {
 	ConditionExpr         string `json:"condition_expr" gorm:"type:text"` // expr-lang expression
 
 	// Response matching conditions
+	// Deprecated: response user/path/method fields are normalized into the shared basic fields.
 	ResponseUserId         int    `json:"response_user_id" gorm:"default:0;index"`
 	ResponseUsername       string `json:"response_username" gorm:"index;default:''"`
 	ResponsePathPattern    string `json:"response_path_pattern" gorm:"type:varchar(512);default:''"`

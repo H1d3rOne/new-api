@@ -1,0 +1,71 @@
+name: Sync upstream main and rebase feature branch
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every 6 hours. GitHub schedules use UTC.
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main-and-rebase-feature
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: QuantumNous/new-api
+  FEATURE_BRANCH: feat/endpoint-format-conversion
+
+jobs:
+  sync:
+    name: Sync main, then rebase feature branch
+    runs-on: ubuntu-latest
+    # This workflow is intended for forks only.
+    if: github.repository != 'QuantumNous/new-api'
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync fork main and rebase feature branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null || \
+            git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
+
+          git fetch --prune upstream "+refs/heads/main:refs/remotes/upstream/main"
+          git fetch --prune origin "+refs/heads/main:refs/remotes/origin/main"
+
+          # Keep the fork's main current with upstream/main while preserving this
+          # fork-only workflow commit. Do not reset main hard to upstream/main,
+          # otherwise the workflow would delete itself and stop future syncs.
+          git switch -C main origin/main
+          git rebase upstream/main
+          git push origin main --force-with-lease=refs/heads/main:refs/remotes/origin/main
+
+          if ! git ls-remote --exit-code --heads origin "${FEATURE_BRANCH}" >/dev/null 2>&1; then
+            echo "origin/${FEATURE_BRANCH} does not exist; skip feature rebase."
+            exit 0
+          fi
+
+          git fetch --prune origin "+refs/heads/${FEATURE_BRANCH}:refs/remotes/origin/${FEATURE_BRANCH}"
+          git switch -C "${FEATURE_BRANCH}" "origin/${FEATURE_BRANCH}"
+
+          # Rebase onto upstream/main instead of fork/main so this fork-only
+          # workflow commit is not included in the feature branch history.
+          git rebase upstream/main
+          git push origin "${FEATURE_BRANCH}" --force-with-lease=refs/heads/${FEATURE_BRANCH}:refs/remotes/origin/${FEATURE_BRANCH}
